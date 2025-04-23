@@ -26,6 +26,8 @@ pacman::p_load(
 options(scipen = 999)
 ```
 
+# Simple SCCS
+
 ## Data generating mechanism
 
 -   Design: SCCS (thus only subjects with outcome are included)
@@ -36,20 +38,19 @@ options(scipen = 999)
 -   True direct effect of E (exposure) on Y (outcome): $IRR = e^\beta = 1, 2 or 5$
 -   Baseline rate of the event: $exp(\psi_i) = 1*10^{-5}$, thus the event is rare and no more than 1% of cases having \>1 event during the observation period
 
-Procedure to generate data: 
-1. Fix parameter values and random seed
+Procedure to generate data: 1. Fix parameter values and random seed
 
-2. Generate exposure date. Then the observation time is partitioned into risk and control period, with $e_{ik}$ number of day subject $i$ spends in period $k$ 
+2.  Generate exposure date. Then the observation time is partitioned into risk and control period, with $e_{ik}$ number of day subject $i$ spends in period $k$
 
-3. Generate the marginal total number of events per subject, using a zero-truncated Poisson distribution with rate $\Sigma_{k=0}^{1}\lambda_{ik}e_{ik} =\Sigma_{k=0}^{2}exp[\psi_i + \beta k]e_{ik}$, conditionally on the exposure history.
+3.  Generate the marginal total number of events per subject, using a zero-truncated Poisson distribution with rate $\Sigma_{k=0}^{1}\lambda_{ik}e_{ik} =\Sigma_{k=0}^{2}exp[\psi_i + \beta k]e_{ik}$, conditionally on the exposure history.
 
-4. Use multinomial distribution to randomly allocate each event with the probability $\frac{\lambda_{ik}e_{ik}}{\Sigma_{k=0}^1\lambda_{ik}e_{ik}}$ to the risk/ control period for each subject 
+4.  Use multinomial distribution to randomly allocate each event with the probability $\frac{\lambda_{ik}e_{ik}}{\Sigma_{k=0}^1\lambda_{ik}e_{ik}}$ to the risk/ control period for each subject
 
-5. Fit the SCCS model (Conditional Poisson regression) to estimate the IRR & their 95% CI of the effect of E on Y  
+5.  Fit the SCCS model (Conditional Poisson regression) to estimate the IRR & their 95% CI of the effect of E on Y
 
-6. Repeat the step 2 to 5 to conduct 10000 replicates of the simulation 
+6.  Repeat the step 2 to 5 to conduct 10000 replicates of the simulation
 
-7. Output the results: 1) the pooled IRR 2) Percentage of bias compared to the true IRR 3) Empirical standard error 4) Coverage of CI.
+7.  Output the results: 1) the pooled IRR 2) Percentage of bias compared to the true IRR 3) Empirical standard error 4) Coverage of CI.
 
 ### Function to generate SCCS data
 
@@ -100,7 +101,6 @@ simple_sccs_data <- function(n = 1000, obs_time = 500, baseline_rate = 1e-5, bet
   return(dataset)
 }
 ```
-
 
 ## Data analysis
 
@@ -174,3 +174,8 @@ data_6 <- simple_sccs_data(n = 1000, obs_time = 500, baseline_rate = 1e-5, beta=
 result_test2 <- analyse_sccs_simple(data_6, 1)
 result_test2
 ```
+
+## SCCS with confounder 
+
+
+
