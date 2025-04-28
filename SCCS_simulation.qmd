@@ -26,9 +26,9 @@ pacman::p_load(
 options(scipen = 999)
 ```
 
-# Simple SCCS
+## Simple SCCS
 
-## Data generating mechanism
+### Data generating mechanism
 
 -   Design: SCCS (thus only subjects with outcome are included)
 -   Sample size: 1000 cases
@@ -38,7 +38,9 @@ options(scipen = 999)
 -   True direct effect of E (exposure) on Y (outcome): $IRR = e^\beta = 1, 2 or 5$
 -   Baseline rate of the event: $exp(\psi_i) = 1*10^{-5}$, thus the event is rare and no more than 1% of cases having \>1 event during the observation period
 
-Procedure to generate data: 1. Fix parameter values and random seed
+Procedure to generate data: 
+
+1. Fix parameter values and random seed
 
 2.  Generate exposure date. Then the observation time is partitioned into risk and control period, with $e_{ik}$ number of day subject $i$ spends in period $k$
 
@@ -52,7 +54,7 @@ Procedure to generate data: 1. Fix parameter values and random seed
 
 7.  Output the results: 1) the pooled IRR 2) Percentage of bias compared to the true IRR 3) Empirical standard error 4) Coverage of CI.
 
-### Function to generate SCCS data
+#### Function to generate SCCS data
 
 ```{r}
 simple_sccs_data <- function(n = 1000, obs_time = 500, baseline_rate = 1e-5, beta=log(2), risk_length=28)
@@ -102,9 +104,9 @@ simple_sccs_data <- function(n = 1000, obs_time = 500, baseline_rate = 1e-5, bet
 }
 ```
 
-## Data analysis
+### Data analysis
 
-### Function to analyse dataset
+#### Function to analyse dataset
 
 ```{r}
 analyse_sccs_simple <- function(df, rep)
@@ -118,7 +120,7 @@ analyse_sccs_simple <- function(df, rep)
                        aevent = eventday, # event time
                        adrug = expostart, # start of exposure
                        aedrug = expoend,  # end of risk period
-                       expogrp = 0,       # start of risk period counted from adrug
+                       expogrp = 0,       # start of risk period counted from 'adrug'
                        data = df)
   
   # Extract results from SCCS model
@@ -133,7 +135,7 @@ analyse_sccs_simple <- function(df, rep)
 }
 ```
 
-### Function to loop simulation
+#### Function to loop simulation
 
 Small number of iterations to check if it works:
 
@@ -175,7 +177,98 @@ result_test2 <- analyse_sccs_simple(data_6, 1)
 result_test2
 ```
 
-## SCCS with confounder 
+## Alternative data generating procedure
 
+1. Generate a cohort of 192000 individuals (to get ~1000 events)
+2. Generate observation time: 500 for all individuals
+3. Generate binary exposure (vaccination) for 80% of the individuals
+    + Date of exposure (for those with the exposure present): random variable from a uniform distribution within each individuals' observation period
+    + Risk window length: 28 days post-exposure
+4. Binary outcome: generated as a function of baseline event probability ($\beta_0$) and exposure status ($\beta_1$). The daily probability of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
 
+$$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij}$$
+- Set $\beta_0 = ln(1e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times)
+- Based on the daily probability, generate the binary outcome using a Bernoulli trial
+- Each subjects could have multiple (independent) outcomes
 
+```{r}
+simple_sccs_data2 <- function(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
+{
+  beta0 <- qlogis(baseline_rate)   
+  beta1 <- log(IRR)
+  
+  dataset <- data.frame()
+  
+    # Assign exposure status
+    exposed <- rbinom(n, 1, 0.8)
+    # If exposed, assign exposure date
+    exposure_start <- rep(NA, n)
+    exposure_start[exposed == 1] <- sample(1:(obs_time - risk_length), 
+                                           sum(exposed), replace = TRUE)
+    exposure_end <- exposure_start + risk_length - 1
+    
+    # Expand the data to long format: one row per individual per day
+    id <- rep(1:n, each = obs_time)
+    day <- rep(1:obs_time, times = n)
+    
+    # Daily exposure status
+    exposure_start_long <- rep(exposure_start, each = obs_time)
+    exposure_end_long <- rep(exposure_end, each = obs_time)
+    exposure_status <- ifelse(!is.na(exposure_start_long) & day >= exposure_start_long & day <= exposure_end_long, 1, 0)
+    # Daily outcome status
+    logit_p <- beta0 + beta1 * exposure_status
+    p_event <- plogis(logit_p)
+    outcome <- rbinom(length(p_event), 1, p_event)
+    
+    # Long data format
+  long_data <- data.frame(
+    id = id,
+    day = day,
+    exposure = exposure_status,
+    outcome = outcome,
+    exposure_start = exposure_start_long,
+    exposure_end = exposure_end_long
+  )
+
+  # Keep only event days
+  event_data <- subset(long_data, outcome == 1 & !is.na(exposure_start_long))
+  
+  # SCCS data format
+    sccs_data <- data.frame(
+    indiv = event_data$id,
+    obs_start = 1,
+    obs_end = obs_time,
+    expostart = event_data$exposure_start,
+    expoend = event_data$exposure_end,
+    eventday = event_data$day
+  )
+  
+  return(sccs_data)
+}
+```
+
+### Test the data-generating mechanism
+```{r}
+set.seed(100)
+data_test <- simple_sccs_data2(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
+
+result_test <- analyse_sccs_simple(data_test,1)
+result_test
+```
+
+```{r}
+set.seed(1003)
+
+n_sim <- 10
+
+rng_states <- list() #Store the state of the random number generator 
+
+results <- foreach( i = 1:n_sim, .combine="rbind") %do% {
+  rng_states[[i]] <- .Random.seed  # save RNG state
+  data <- simple_sccs_data2(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
+  result<-analyse_sccs_simple(data, i)
+}
+# view results
+head(results)
+
+```
