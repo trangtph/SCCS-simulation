@@ -20,7 +20,8 @@ pacman::p_load(
               tidyverse,
               extraDistr,
               SCCS,
-              doParallel
+              doParallel,
+              tictoc   # Measure performance time
               ) 
 
 options(scipen = 999)
@@ -38,9 +39,9 @@ options(scipen = 999)
 -   True direct effect of E (exposure) on Y (outcome): $IRR = e^\beta = 1, 2 or 5$
 -   Baseline rate of the event: $exp(\psi_i) = 1*10^{-5}$, thus the event is rare and no more than 1% of cases having \>1 event during the observation period
 
-Procedure to generate data: 
+Procedure to generate data:
 
-1. Fix parameter values and random seed
+1.  Fix parameter values and random seed
 
 2.  Generate exposure date. Then the observation time is partitioned into risk and control period, with $e_{ik}$ number of day subject $i$ spends in period $k$
 
@@ -142,18 +143,49 @@ Small number of iterations to check if it works:
 ```{r}
 set.seed(1003)
 
-n_sim <- 10
+n_sim <- 5
 
-rng_states <- list() #Store the state of the random number generator 
+tic("Serial simulation")
+rng_states_serial <- list() #Store the state of the random number generator 
 
 results <- foreach( i = 1:n_sim, .combine="rbind") %do% {
-  rng_states[[i]] <- .Random.seed  # save RNG state
+  rng_states_serial[[i]] <- .Random.seed  # save RNG state
   data <- simple_sccs_data(n = 1000, obs_time = 500, baseline_rate = 1e-5, beta=log(2), risk_length=28)
   result<-analyse_sccs_simple(data, i)
 }
+toc()
 # view results
 head(results)
 
+```
+
+##### Parallel session
+```{r}
+set.seed(1003)
+n_sim <- 5
+
+tic("Parallel simulation") # measure run time
+# Set up parallel sessions
+n_cores <- parallel::detectCores() - 1
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+RNGkind("L'Ecuyer-CMRG")  # for parallel-safe reproducibility
+
+results_list <- foreach(i = 1:n_sim, 
+                        .packages = c("extraDistr", "dplyr", "SCCS")) %dopar% {
+  seed <- .Random.seed 
+  data <- simple_sccs_data(n = 1000, obs_time = 500, baseline_rate = 1e-5, beta = log(2), risk_length = 28)
+  result <- analyse_sccs_simple(data, i)
+  
+  list(result = result, seed = seed) 
+}
+
+stopCluster(cl)
+toc() # measure run time
+
+results_df <- bind_rows(lapply(results_list, function(x) x$result))
+rng_states_parallel <- lapply(results_list, function(x) x$seed)
+names(rng_states) <- paste0("rep", seq_along(rng_states))
 ```
 
 ## Check the simulation
@@ -179,17 +211,14 @@ result_test2
 
 ## Alternative data generating procedure
 
-1. Generate a cohort of 192000 individuals (to get ~1000 events)
-2. Generate observation time: 500 for all individuals
-3. Generate binary exposure (vaccination) for 80% of the individuals
-    + Date of exposure (for those with the exposure present): random variable from a uniform distribution within each individuals' observation period
-    + Risk window length: 28 days post-exposure
-4. Binary outcome: generated as a function of baseline event probability ($\beta_0$) and exposure status ($\beta_1$). The daily probability of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
+1.  Generate a cohort of 192000 individuals (to get \~1000 events)
+2.  Generate observation time: 500 for all individuals
+3.  Generate binary exposure (vaccination) for 80% of the individuals
+    -   Date of exposure (for those with the exposure present): random variable from a uniform distribution within each individuals' observation period
+    -   Risk window length: 28 days post-exposure
+4.  Binary outcome: generated as a function of baseline event probability ($\beta_0$) and exposure status ($\beta_1$). The daily probability of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
 
-$$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij}$$
-- Set $\beta_0 = ln(1e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times)
-- Based on the daily probability, generate the binary outcome using a Bernoulli trial
-- Each subjects could have multiple (independent) outcomes
+$$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij}$$ - Set $\beta_0 = ln(1e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times) - Based on the daily probability, generate the binary outcome using a Bernoulli trial - Each subjects could have multiple (independent) outcomes
 
 ```{r}
 simple_sccs_data2 <- function(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
@@ -248,6 +277,7 @@ simple_sccs_data2 <- function(n = 192000, obs_time = 500, baseline_rate = 1e-5, 
 ```
 
 ### Test the data-generating mechanism
+
 ```{r}
 set.seed(100)
 data_test <- simple_sccs_data2(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
