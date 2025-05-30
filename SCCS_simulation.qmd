@@ -423,87 +423,9 @@ $$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij} + \beta_2*Confounder_{
 -   Based on the daily probability, generate the binary outcome using a Bernoulli trial
 -   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
 
-```{r}
 
+```{r}
 cohort_time_varying <-function(n = 100000, obs_time = 500, risk_window=28, 
-                               p_C = 1e-3, C_reduce_C = 0.3, 
-                               p_E = 3.2e-3, C_reduce_E = 0.25, E_reduce_E = 0.1,
-                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-{
-
-  log_p_C <- log(p_C)
-  log_p_E <- log(p_E)
-  log_C_reduce_C <- log(C_reduce_C)
-  log_C_reduce_E <- log(C_reduce_E)
-  log_E_reduce_E <- log(E_reduce_E)
-  log_baseline_Y <- log(baseline_Y)
-  log_IRR_E <- log(IRR_E)
-  log_IRR_C <- log(IRR_C)    
-
-ID <- seq(1:n)
-day <- seq(1:obs_time)
-C <- matrix(0L, nrow = n, ncol = obs_time)
-E <- matrix(0L, nrow = n, ncol = obs_time)
-Y <- matrix(0L, nrow = n, ncol = obs_time)
-
-colnames(C) <- paste0("C_",day)
-colnames(E) <- paste0("E_",day)
-colnames(Y) <- paste0("Y_",day)
-
-  for (t in 1:obs_time) {
-    # Check history of C and E
-    if (t == 1) {
-      recent_C_onC <- recent_C_onE <- recent_E_onE <- rep(FALSE,n)
-    } else {
-      # check if any C or E in last 90 days for each subject
-      recent_C_onC <- rowSums(C[, pmax(1, t - 90):(t - 1), drop = FALSE]) > 0
-      recent_E_onE <- rowSums(E[, pmax(1, t - 90):(t - 1), drop = FALSE]) > 0
-
-      # Check if any C in last 28 day
-      recent_C_onE <- rowSums(C[, pmax(1, t - 28):(t - 1), drop = FALSE]) > 0
-    }
-    
-    # Generate current C
-    prob_C <- plogis(log_p_C + log_C_reduce_C*recent_C_onC)
-    C[, t] <- rbinom(n, 1, prob_C)
-    
-    # Generate current E
-    prob_E <- plogis(log_p_E + log_C_reduce_E*recent_C_onE + log_E_reduce_E*recent_E_onE)
-    E[, t] <- rbinom(n, 1, prob_E)
-    
-    # Generate outcome Y
-    # Check if day t is within the risk window of C or E
-    recent_C_onY <- rowSums(C[, pmax(1, t - risk_window +1):(t - 1), drop = FALSE]) > 0
-    recent_E_onY <- rowSums(E[, pmax(1, t - risk_window + 1):(t - 1), drop = FALSE]) > 0
-    
-    prob_Y <- plogis(log_baseline_Y + log_IRR_E*recent_E_onY + log_IRR_C*recent_C_onY)
-    Y[, t] <- rbinom(n, 1, prob_Y)
-  }
-
-return(data.frame(C*1L, E*1L, Y*1L))
-}
-```
-
-```{r}
-set.seed(367)
-tic("Cohort simulation")
-test <- cohort_time_varying()
-toc()
-
-tic("Reshape")
-test2 <- test %>% 
-  mutate(ID = seq(1:nrow(test))) %>%
-    pivot_longer(
-    cols = matches("^(C|E|Y)_\\d+$"),
-    names_to = c(".value", "day"),
-    names_pattern = "^(C|E|Y)_(\\d+)$"
-  ) %>%
-  mutate(day = as.integer(day))
-toc()
-```
-
-```{r}
-cohort_time_varying2 <-function(n = 100000, obs_time = 500, risk_window=28, 
                                p_C = 1e-3, C_reduce_C = 0.3, 
                                p_E = 3.2e-3, C_reduce_E = 0.25, E_reduce_E = 0.1,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
@@ -535,7 +457,7 @@ roll_E_onY <- integer (n)
 
 
   for (t in 1:obs_time) {
-# Remove C or E events that fall outside the look-back window (28 days for C on E, C on Y, E on Y, and 90 days for C on C, E on E )
+# Remove C or E events that fall outside the look-back window (28 days for C on E, C on Y, E on Y, and 91 days for C on C, E on E )
     if (t > 28) {
       roll_C_onE <- roll_C_onE - C[, t- 28]
     }
@@ -543,9 +465,9 @@ roll_E_onY <- integer (n)
       roll_C_onY <- roll_C_onY - C[, t - risk_window]
       roll_E_onY <- roll_E_onY - E[, t - risk_window]
     }
-    if (t > 90) {
-      roll_C_onC <- roll_C_onC - C[, t - 90]
-      roll_E_onE <- roll_E_onE - E[, t - 90]
+    if (t > 91) {
+      roll_C_onC <- roll_C_onC - C[, t - 91]
+      roll_E_onE <- roll_E_onE - E[, t - 91]
     }
 
     # Generate C (depends on C[t-90, t-1])
@@ -587,17 +509,11 @@ return(data.frame(C*1L, E*1L, Y*1L))
 
 ### Data pre-processing functions
 
-```{r}
-summary(test2$C)
-summary(test2$E)
-summary(test2$Y)
-
-```
 
 ```{r}
 set.seed(367)
-tic("Cohort simulation 2")
-test3 <- cohort_time_varying2()
+tic("Cohort simulation")
+test3 <- cohort_time_varying()
 toc() # 19 sec to generate data
 
 tic("Reshape")
@@ -612,6 +528,100 @@ test4 <- test3 %>%
 toc() # 13 sec to reshape data
 ```
 
+```{r}
+cohort_time_varying2 <-function(n = 100000, obs_time = 500, risk_window=28, 
+                               p_C = 1e-3, C_reduce_C = 0.3, 
+                               p_E = 3.2e-3, C_reduce_E = 0.25, E_reduce_E = 0.1,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+{
+  log_p_C <- log(p_C)
+  log_p_E <- log(p_E)
+  log_C_reduce_C <- log(C_reduce_C)
+  log_C_reduce_E <- log(C_reduce_E)
+  log_E_reduce_E <- log(E_reduce_E)
+  log_baseline_Y <- log(baseline_Y)
+  log_IRR_E <- log(IRR_E)
+  log_IRR_C <- log(IRR_C)    
 
+day <- seq(1:obs_time)
+C <- matrix(0L, nrow = n, ncol = obs_time)
+E <- matrix(0L, nrow = n, ncol = obs_time)
+Y <- matrix(0L, nrow = n, ncol = obs_time)
+
+# Rolling sum of history of C and E
+roll_C_onC <- integer (n)
+roll_C_onE <- integer (n)
+roll_E_onE <- integer (n)
+roll_C_onY <- integer (n)
+roll_E_onY <- integer (n)
+
+
+  for (t in 1:obs_time) {
+# Remove C or E events that fall outside the look-back window (28 days for C on E, C on Y, E on Y, and 91 days for C on C, E on E )
+    if (t > 28) {
+      roll_C_onE <- roll_C_onE - C[, t- 28]
+    }
+    if (t > risk_window) {
+      roll_C_onY <- roll_C_onY - C[, t - risk_window]
+      roll_E_onY <- roll_E_onY - E[, t - risk_window]
+    }
+    if (t > 91) {
+      roll_C_onC <- roll_C_onC - C[, t - 91]
+      roll_E_onE <- roll_E_onE - E[, t - 91]
+    }
+
+    # Generate C (depends on C[t-90, t-1])
+    recent_C_onC <- roll_C_onC > 0 # Check recent history of C
+    prob_C <- plogis(log_p_C + log_C_reduce_C*recent_C_onC)
+    C_t <- rbinom(n, 1, prob_C)
+    C[, t] <- C_t
+    
+    # Update rolling of C 
+    roll_C_onC <- roll_C_onC + C_t
+    roll_C_onE <- roll_C_onE + C_t
+    roll_C_onY <- roll_C_onY + C_t
+    
+    # Generate E (depends on C[t-27, t] and E[t-90, t-1])
+    recent_C_onE <- roll_C_onE > 0
+    recent_E_onE <- roll_E_onE > 0
+    prob_E <- plogis(log_p_E + log_C_reduce_E*recent_C_onE + log_E_reduce_E*recent_E_onE)
+    E_t <- rbinom(n, 1, prob_E)
+    E[, t] <- E_t
+    
+    # Update rolling of E
+    roll_E_onE <- roll_E_onE + E_t
+    roll_E_onY <- roll_E_onY + E_t
+    
+    
+    # Generate Y (depends on C[t-risk_window+1, t], E[t-risk_window+1, t])
+    recent_C_onY <- roll_C_onY > 0
+    recent_E_onY <- roll_E_onY > 0
+
+    prob_Y <- plogis(log_baseline_Y + log_IRR_E*recent_E_onY + log_IRR_C*recent_C_onY)
+    Y[, t] <- rbinom(n, 1, prob_Y)
+    
+  }
+
+# Reshape to long format
+id <- rep(1:n, each = obs_time)
+day2 <- rep(1:obs_time, times = n)
+data_long <- data.frame(
+  id = id,
+  day = day2,
+  C = as.vector(C),
+  E = as.vector(E),
+  Y = as.vector(Y)
+)
+
+return(data_long)
+}
+```
+
+```{r}
+set.seed(367)
+tic("Cohort simulation long format")
+test5 <- cohort_time_varying2() 
+toc() # 18 sec
+``` 
 
 
