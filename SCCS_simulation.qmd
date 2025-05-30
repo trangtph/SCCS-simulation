@@ -15,13 +15,16 @@ install.packages("pacman")
 }
 library(pacman)
 pacman::p_load(
-              foreach, #foreach loop
+              foreach,   #foreach loop
               stats,
               tidyverse,
-              extraDistr,
+              panelr,    # Reshape data
               SCCS,
               doParallel,
-              tictoc   # Measure performance time
+              tictoc,    # Measure performance time
+              progressr, # Measure progress
+              rio,        # Export file  
+              here
               ) 
 
 options(scipen = 999)
@@ -160,7 +163,9 @@ head(results)
 ```
 
 ##### Parallel session
-```{r}
+
+Still has not run properly 
+```{r eval=FALSE}
 set.seed(1003)
 n_sim <- 5
 
@@ -188,6 +193,33 @@ rng_states_parallel <- lapply(results_list, function(x) x$seed)
 names(rng_states) <- paste0("rep", seq_along(rng_states))
 ```
 
+### Function to quantify bias and measure performance
+
+```{r}
+
+
+bias_quantification <- function(true_IRR = 2, result_table)
+{
+  true_beta1 = log(true_IRR)
+
+  # Number of missing values of estimated beta1 (e.g due to convergence)
+  missing_beta1 <- sum(is.na(result_table$est))
+  
+  # bias
+  beta_hat <- mean(result_table[,"est"])
+  bias <- beta_hat - true_beta1
+  
+  # Coverage
+  result_table$coverage_IRR <- with(result_table,
+                                    IRR_CI_Lower <= true_IRR & IRR_CI_Upper >= true_IRR)
+  coverage_irr <- mean(result_table$coverage_IRR)
+  
+  performance <- data.frame(missing_beta1, bias, coverage_irr)
+  
+}
+```
+
+
 ## Check the simulation
 
 ### Simulate and analyse a single set of data
@@ -209,21 +241,25 @@ result_test2 <- analyse_sccs_simple(data_6, 1)
 result_test2
 ```
 
-## Alternative data generating procedure
+## Cohort data generating procedure
 
-1.  Generate a cohort of 192000 individuals (to get \~1000 events)
+1.  Generate a cohort of 100,000 individuals (to get at least 1000 events)
 2.  Generate observation time: 500 for all individuals
 3.  Generate binary exposure (vaccination) for 80% of the individuals
     -   Date of exposure (for those with the exposure present): random variable from a uniform distribution within each individuals' observation period
     -   Risk window length: 28 days post-exposure
-4.  Binary outcome: generated as a function of baseline event probability ($\beta_0$) and exposure status ($\beta_1$). The daily probability of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
+4.  Binary outcome: generated as a function of baseline event odds ($\beta_0$) and exposure status ($\beta_1$). The daily odds of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
 
-$$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij}$$ - Set $\beta_0 = ln(1e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times) - Based on the daily probability, generate the binary outcome using a Bernoulli trial - Each subjects could have multiple (independent) outcomes
+$$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij}$$
+
+-   Set $\beta_0 = ln(2e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times)
+-   Based on the daily probability, generate the binary outcome using a Bernoulli trial
+-   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
 
 ```{r}
-simple_sccs_data2 <- function(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
+simple_sccs_data2 <- function(n = 100000, obs_time = 500, baseline_odds = 2e-5, IRR = 2, risk_length=28)
 {
-  beta0 <- qlogis(baseline_rate)   
+  beta0 <- log(baseline_odds)   
   beta1 <- log(IRR)
   
   dataset <- data.frame()
@@ -278,27 +314,304 @@ simple_sccs_data2 <- function(n = 192000, obs_time = 500, baseline_rate = 1e-5, 
 
 ### Test the data-generating mechanism
 
+Test one run using different seeds
 ```{r}
-set.seed(100)
-data_test <- simple_sccs_data2(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
+set.seed(123)
+tic("Analyse 1 dataset")
+data_test2 <- simple_sccs_data2(n = 100000, obs_time = 500, baseline_odds = 2e-5, IRR = 2, risk_length=28)
 
 result_test <- analyse_sccs_simple(data_test,1)
 result_test
+toc()
+
+set.seed(1003)
+tic("Analyse 1 dataset")
+data_test <- simple_sccs_data2(n = 100000, obs_time = 500, baseline_odds = 2e-5, IRR = 2, risk_length=28)
+
+result_test <- analyse_sccs_simple(data_test,1)
+result_test
+toc()
+
+set.seed(200)
+tic("Analyse 1 dataset")
+data_test <- simple_sccs_data2(n = 100000, obs_time = 500, baseline_odds = 2e-5, IRR = 2, risk_length=28)
+
+result_test <- analyse_sccs_simple(data_test,1)
+result_test
+toc()
+
+set.seed(1280)
+tic("Analyse 1 dataset")
+data_test <- simple_sccs_data2(n = 100000, obs_time = 500, baseline_odds = 2e-5, IRR = 2, risk_length=28)
+
+result_test <- analyse_sccs_simple(data_test,1)
+result_test
+toc()
 ```
 
+Check with small number of runs
 ```{r}
 set.seed(1003)
 
 n_sim <- 10
 
+tic("Cohort simulation")
 rng_states <- list() #Store the state of the random number generator 
 
 results <- foreach( i = 1:n_sim, .combine="rbind") %do% {
   rng_states[[i]] <- .Random.seed  # save RNG state
-  data <- simple_sccs_data2(n = 192000, obs_time = 500, baseline_rate = 1e-5, IRR = 2, risk_length=28)
+  data <- simple_sccs_data2(n = 100000, obs_time = 500, baseline_odds = 2e-5, IRR = 2, risk_length=28)
   result<-analyse_sccs_simple(data, i)
 }
-# view results
-head(results)
+toc()
 
 ```
+
+### Run the full simulation
+```{r}
+set.seed(2025)
+
+n_sim <- 1000
+#handlers(global = TRUE)  # Need to run this code in the console instead or RMarkdown
+
+tic("Cohort simulation")
+rng_states <- list() #Store the state of the random number generator 
+
+with_progress({
+  p <- progressor(steps = n_sim)
+
+results_1000 <- foreach( i = 1:n_sim, .combine="rbind") %do% {
+  p(sprintf("Iteration %d", i))  # update progress
+  rng_states[[i]] <- .Random.seed  # save RNG state
+  data <- simple_sccs_data2(n = 100000, obs_time = 500, baseline_odds = 2e-5, IRR = 2, risk_length=28)
+  result<-analyse_sccs_simple(data, i)
+}
+})
+toc() #2.5h to complete the simulation
+
+#export(results_1000, here("Results", "SCCS_results_no_confounder.csv"))
+#capture.output(rng_states, file = "RNG_states_SCCS_no_confounder.txt")
+
+# Evaluate performance
+
+#Exploratory
+#Distribution of effect estimates
+
+hist(results_1000$est, breaks = 30, main = "Distribution of beta_1")
+hist(results_1000$se, breaks = 30, main = "Distribution of SE of beta_1")
+hist(results_1000$n_event, breaks = 10, main = "Distribution of number of events")
+
+bias_quantification_result <-bias_quantification(result_table = results_1000)
+bias_quantification_result <- bias_quantification_result %>%
+  mutate(mean_nr_event = mean(results_1000$n_event))
+bias_quantification_result
+```
+
+## Time-varying confounder
+
+### Data generating mechanism
+-   Cohort of 100,000 individual
+- Daily odds of the binary time-varying confounder C (COVID-19 infection): $10^{-3}$. Being infected within 90 days reduce that odds by 70%.  Based on the daily probability, generate the binary time-varying confounder using a Bernoulli trial.
+- Daily odds of exposure E (vaccination): $3.2*10^{-3}$ (so that 80% of the sample get vaccinated within 500 days). Getting infected on that day and previous 27 days reduces the odds by 75%. Getting vaccinated in the previous 90 days reduces the odds by 90% 
+
+-   Duration of effect of C and E on binary outcome Y: 28 days including day 0.
+- Y is generated as a function of baseline event odds ($\beta_0$), exposure status ($\beta_1$) and Confounder status ($\beta_2$). The daily odds of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
+
+$$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij} + \beta_2*Confounder_{ij}$$
+
+-   Set $\beta_0 = ln(2e-5), \beta_1 = ln(2), \beta_2 = ln(5)$ (Outcome is rare and being exposed/ having counfounder increase the odds of the outcome 2 times and 5 times, repectively)
+-   Based on the daily probability, generate the binary outcome using a Bernoulli trial
+-   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
+
+```{r}
+
+cohort_time_varying <-function(n = 100000, obs_time = 500, risk_window=28, 
+                               p_C = 1e-3, C_reduce_C = 0.3, 
+                               p_E = 3.2e-3, C_reduce_E = 0.25, E_reduce_E = 0.1,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+{
+
+  log_p_C <- log(p_C)
+  log_p_E <- log(p_E)
+  log_C_reduce_C <- log(C_reduce_C)
+  log_C_reduce_E <- log(C_reduce_E)
+  log_E_reduce_E <- log(E_reduce_E)
+  log_baseline_Y <- log(baseline_Y)
+  log_IRR_E <- log(IRR_E)
+  log_IRR_C <- log(IRR_C)    
+
+ID <- seq(1:n)
+day <- seq(1:obs_time)
+C <- matrix(0L, nrow = n, ncol = obs_time)
+E <- matrix(0L, nrow = n, ncol = obs_time)
+Y <- matrix(0L, nrow = n, ncol = obs_time)
+
+colnames(C) <- paste0("C_",day)
+colnames(E) <- paste0("E_",day)
+colnames(Y) <- paste0("Y_",day)
+
+  for (t in 1:obs_time) {
+    # Check history of C and E
+    if (t == 1) {
+      recent_C_onC <- recent_C_onE <- recent_E_onE <- rep(FALSE,n)
+    } else {
+      # check if any C or E in last 90 days for each subject
+      recent_C_onC <- rowSums(C[, pmax(1, t - 90):(t - 1), drop = FALSE]) > 0
+      recent_E_onE <- rowSums(E[, pmax(1, t - 90):(t - 1), drop = FALSE]) > 0
+
+      # Check if any C in last 28 day
+      recent_C_onE <- rowSums(C[, pmax(1, t - 28):(t - 1), drop = FALSE]) > 0
+    }
+    
+    # Generate current C
+    prob_C <- plogis(log_p_C + log_C_reduce_C*recent_C_onC)
+    C[, t] <- rbinom(n, 1, prob_C)
+    
+    # Generate current E
+    prob_E <- plogis(log_p_E + log_C_reduce_E*recent_C_onE + log_E_reduce_E*recent_E_onE)
+    E[, t] <- rbinom(n, 1, prob_E)
+    
+    # Generate outcome Y
+    # Check if day t is within the risk window of C or E
+    recent_C_onY <- rowSums(C[, pmax(1, t - risk_window +1):(t - 1), drop = FALSE]) > 0
+    recent_E_onY <- rowSums(E[, pmax(1, t - risk_window + 1):(t - 1), drop = FALSE]) > 0
+    
+    prob_Y <- plogis(log_baseline_Y + log_IRR_E*recent_E_onY + log_IRR_C*recent_C_onY)
+    Y[, t] <- rbinom(n, 1, prob_Y)
+  }
+
+return(data.frame(C*1L, E*1L, Y*1L))
+}
+```
+
+```{r}
+set.seed(367)
+tic("Cohort simulation")
+test <- cohort_time_varying()
+toc()
+
+tic("Reshape")
+test2 <- test %>% 
+  mutate(ID = seq(1:nrow(test))) %>%
+    pivot_longer(
+    cols = matches("^(C|E|Y)_\\d+$"),
+    names_to = c(".value", "day"),
+    names_pattern = "^(C|E|Y)_(\\d+)$"
+  ) %>%
+  mutate(day = as.integer(day))
+toc()
+```
+
+```{r}
+cohort_time_varying2 <-function(n = 100000, obs_time = 500, risk_window=28, 
+                               p_C = 1e-3, C_reduce_C = 0.3, 
+                               p_E = 3.2e-3, C_reduce_E = 0.25, E_reduce_E = 0.1,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+{
+  log_p_C <- log(p_C)
+  log_p_E <- log(p_E)
+  log_C_reduce_C <- log(C_reduce_C)
+  log_C_reduce_E <- log(C_reduce_E)
+  log_E_reduce_E <- log(E_reduce_E)
+  log_baseline_Y <- log(baseline_Y)
+  log_IRR_E <- log(IRR_E)
+  log_IRR_C <- log(IRR_C)    
+
+day <- seq(1:obs_time)
+C <- matrix(0L, nrow = n, ncol = obs_time)
+E <- matrix(0L, nrow = n, ncol = obs_time)
+Y <- matrix(0L, nrow = n, ncol = obs_time)
+
+colnames(C) <- paste0("C_",day)
+colnames(E) <- paste0("E_",day)
+colnames(Y) <- paste0("Y_",day)
+
+# Rolling sum of history of C and E
+roll_C_onC <- integer (n)
+roll_C_onE <- integer (n)
+roll_E_onE <- integer (n)
+roll_C_onY <- integer (n)
+roll_E_onY <- integer (n)
+
+
+  for (t in 1:obs_time) {
+# Remove C or E events that fall outside the look-back window (28 days for C on E, C on Y, E on Y, and 90 days for C on C, E on E )
+    if (t > 28) {
+      roll_C_onE <- roll_C_onE - C[, t- 28]
+    }
+    if (t > risk_window) {
+      roll_C_onY <- roll_C_onY - C[, t - risk_window]
+      roll_E_onY <- roll_E_onY - E[, t - risk_window]
+    }
+    if (t > 90) {
+      roll_C_onC <- roll_C_onC - C[, t - 90]
+      roll_E_onE <- roll_E_onE - E[, t - 90]
+    }
+
+    # Generate C (depends on C[t-90, t-1])
+    recent_C_onC <- roll_C_onC > 0 # Check recent history of C
+    prob_C <- plogis(log_p_C + log_C_reduce_C*recent_C_onC)
+    C_t <- rbinom(n, 1, prob_C)
+    C[, t] <- C_t
+    
+    # Update rolling of C 
+    roll_C_onC <- roll_C_onC + C_t
+    roll_C_onE <- roll_C_onE + C_t
+    roll_C_onY <- roll_C_onY + C_t
+    
+    # Generate E (depends on C[t-27, t] and E[t-90, t-1])
+    recent_C_onE <- roll_C_onE > 0
+    recent_E_onE <- roll_E_onE > 0
+    prob_E <- plogis(log_p_E + log_C_reduce_E*recent_C_onE + log_E_reduce_E*recent_E_onE)
+    E_t <- rbinom(n, 1, prob_E)
+    E[, t] <- E_t
+    
+    # Update rolling of E
+    roll_E_onE <- roll_E_onE + E_t
+    roll_E_onY <- roll_E_onY + E_t
+    
+    
+    # Generate Y (depends on C[t-risk_window+1, t], E[t-risk_window+1, t])
+    recent_C_onY <- roll_C_onY > 0
+    recent_E_onY <- roll_E_onY > 0
+
+    prob_Y <- plogis(log_baseline_Y + log_IRR_E*recent_E_onY + log_IRR_C*recent_C_onY)
+    Y[, t] <- rbinom(n, 1, prob_Y)
+    
+  }
+
+return(data.frame(C*1L, E*1L, Y*1L))
+}
+```
+
+
+### Data pre-processing functions
+
+```{r}
+summary(test2$C)
+summary(test2$E)
+summary(test2$Y)
+
+```
+
+```{r}
+set.seed(367)
+tic("Cohort simulation 2")
+test3 <- cohort_time_varying2()
+toc() # 19 sec to generate data
+
+tic("Reshape")
+test4 <- test3 %>% 
+  mutate(ID = seq(1:nrow(test3))) %>%
+    pivot_longer(
+    cols = matches("^(C|E|Y)_\\d+$"),
+    names_to = c(".value", "day"),
+    names_pattern = "^(C|E|Y)_(\\d+)$"
+  ) %>%
+  mutate(day = as.integer(day))
+toc() # 13 sec to reshape data
+```
+
+
+
+
