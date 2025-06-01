@@ -12,13 +12,12 @@ This document is to illustrate the issues with the function to generate daily E 
 -   Observation time: 500 days for all individuals
 -   Daily odds of exposure E (vaccination): $3.2*10^{-3}$ (so that 80% of the sample get vaccinated within 500 days). Once the subject got vaccinated, odds of next vaccination reduces by 99.9%
 
-Binary outcome: generated as a function of baseline event odds ($\beta_0$) and exposure status ($\beta_1$). The daily odds of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
+- Binary outcome Y: generated as a function of baseline event odds ($\beta_0$) and exposure status ($\beta_1$). The daily odds of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
 $$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij}$$
-
--   Set $\beta_0 = ln(2e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times)
--   $Exposure_{ij} = 1$ if day t is within the 28-day risk window of E
--   Based on the daily probability, generate the binary outcome using a Bernoulli trial
--   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
+  +   Set $\beta_0 = ln(2e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times)
+  +   $Exposure_{ij} = 1$ if day t is within the 28-day risk window of E
+  +   Based on the daily probability, generate the binary outcome using a Bernoulli trial
+  +   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
 
 ### Function: Generate data
 
