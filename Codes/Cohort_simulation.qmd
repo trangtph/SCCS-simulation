@@ -1,0 +1,187 @@
+---
+title: "Cohort simulation"
+format: html
+editor: visual
+---
+
+This document is to illustrate the issues with the function to generate daily E and Y status.
+
+## Data-generating mechanism
+
+-   Cohort of 100,000 individual
+-   Observation time: 500 days for all individuals
+-   Daily odds of exposure E (vaccination): $3.2*10^{-3}$ (so that 80% of the sample get vaccinated within 500 days). Once the subject got vaccinated, odds of next vaccination reduces by 99.9%
+
+Binary outcome: generated as a function of baseline event odds ($\beta_0$) and exposure status ($\beta_1$). The daily odds of the outcome on day $j$ during the observation period of individual $i$ is calculated from the logistic regression model:
+$$Logit[Pr(Y_{ij} = 1)] = \beta_0 + \beta_1*Exposure_{ij}$$
+
+-   Set $\beta_0 = ln(2e-5), \beta_1 = ln(2)$ (Outcome is rare and being exposed increase the odds of the outcome 2 times)
+-   $Exposure_{ij} = 1$ if day t is within the 28-day risk window of E
+-   Based on the daily probability, generate the binary outcome using a Bernoulli trial
+-   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
+
+### Function: Generate data
+
+```{r}
+cohort <-function(n = 100000, obs_time = 500, risk_window=28, 
+                               p_E = 3.2e-3,E_reduce_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2)
+{
+  log_p_E <- log(p_E)
+  log_E_reduce_E <- log(E_reduce_E)
+  log_baseline_Y <- log(baseline_Y)
+  log_IRR_E <- log(IRR_E)
+
+E <- matrix(0L, nrow = n, ncol = obs_time)
+Y <- matrix(0L, nrow = n, ncol = obs_time)
+
+# Rolling sum of history of E
+
+roll_E_onE <- integer (n)
+roll_E_onY <- integer (n)
+
+
+  for (t in 1:obs_time) {
+# Remove  E events that fall outside the look-back window
+
+    if (t > risk_window) {
+      roll_E_onY <- roll_E_onY - E[, t - risk_window]
+    }
+
+    # Generate E (depends on  previous E)
+    recent_E_onE <- roll_E_onE > 0
+    prob_E <- plogis(log_p_E + log_E_reduce_E*recent_E_onE)
+    E_t <- rbinom(n, 1, prob_E)
+    E[, t] <- E_t
+    
+    # Update rolling of E
+    roll_E_onE <- roll_E_onE + E_t
+    roll_E_onY <- roll_E_onY + E_t
+    
+    
+    # Generate Y (depends on E[t-risk_window+1, t])
+    recent_E_onY <- roll_E_onY > 0
+
+    prob_Y <- plogis(log_baseline_Y + log_IRR_E*recent_E_onY)
+    Y[, t] <- rbinom(n, 1, prob_Y)
+    
+  }
+
+# Reshape to long format
+id <- rep(1:n, each = obs_time)
+day <- rep(1:obs_time, times = n)
+data_long <- data.frame(
+  id = id,
+  day = day,
+  E = as.vector(E),
+  Y = as.vector(Y)
+)
+data_long <- as.data.table(data_long)
+
+return(data_long)
+}
+```
+
+Toy example to see if the algorithm to detect event history works
+
+```{r}
+set.seed(1003)
+X <- matrix(rbinom(100, 1, 0.2), nrow = 5, ncol = 20)
+Y <- matrix(NA, nrow = 5, ncol = 20)
+recent_X_today2 <- matrix(NA, nrow = 5, ncol = 20)
+recent_X2 <- matrix(NA, nrow = 5, ncol = 20)
+rolling <- integer(5)
+
+for (t in 1:ncol(X)){
+  recent_X <- rolling > 0
+  recent_X2[,t] <- recent_X
+  rolling <- rolling + X[,t]
+  recent_X_today <- rolling >0
+  recent_X_today2[,t] <- recent_X_today
+  Y[,t] <- 1 + 2*recent_X_today
+}
+```
+
+### Function: Reshape data to SCCS-compatible format
+
+```{r}
+SCCS_reformat <- function(data){
+  Y_data <- data[Y ==1 , .(id, Y_day = day)]
+  Y_data <- Y_data[, .row := seq_len(.N), by = id]
+  E_data <- data[E ==1 , .(id, E_day = day)]
+  E_data <- E_data[, .row := seq_len(.N), by = id]
+  E_freq <- E_data %>% count(id) %>% count(n) # Check the distribution of frequency of E per individual
+  
+  merge_Y_E <- merge(Y_data, E_data, by = c("id"), all = TRUE)
+  merge_Y_E2 <- merge_Y_E[!is.na(Y_day) & !is.na(E_day)]
+  merge_Y_E2 <- merge_Y_E2[ , `:=`(obs_start = 1, obs_end = 500)]
+  merge_Y_E2 <- as.data.frame(merge_Y_E2)
+
+  return(list(data= merge_Y_E2, E_freq = E_freq))
+}
+```
+
+### Funtion: Analyse data
+
+```{r}
+analyse_SCCS <- function(data, risk_period = 28, rep=1){
+
+  model <- standardsccs(event ~ E_day, 
+                       indiv= id,      # subject ID
+                       astart = obs_start,# start of observation period 
+                       aend = obs_end,    # end of observation period 
+                       aevent = Y_day, # event time
+                       adrug = E_day, # start of exposure
+                       aedrug = E_day + risk_period - 1,  # end of risk period
+                       expogrp = 0,       # start of risk period counted from 'adrug'
+                       data = data)
+ # Extract results from SCCS model
+  est <- coef(model)[1,1]
+  se <- coef(model)[1,3]
+  IRR <- exp(est)
+  IRR_CI_Lower <- model$conf.int[,3]
+  IRR_CI_Upper <- model$conf.int[,4]
+  n_event <- model$nevent
+  res <- data.frame(rep = rep, est, se, IRR, IRR_CI_Lower, IRR_CI_Upper, n_event, row.names = NULL)
+  return(res)
+}
+```
+
+### Test the data-generating mechanism
+
+```{r}
+set.seed(1003)
+tic("Cohort simulation long format")
+test <- cohort() 
+toc()
+test_reformatted <- SCCS_reformat(test)
+test_reformatted$E_freq
+analyse_SCCS(data = test_reformatted$data)
+```
+
+
+
+```{r}
+# Test with 'E_reduce_E= 1', i.e. no effect of prior exposure on next exposure
+set.seed(1003)
+tic("Cohort simulation long format")
+test2 <- cohort(E_reduce_E= 1) 
+toc()
+test_reformatted2 <- SCCS_reformat(test2)
+test_reformatted2$E_freq # Check the distribution of frequency of E per individual
+analyse_SCCS(data = test_reformatted2$data)
+```
+
+Observation: changing the effect of E on E does not change the distribution of frequency of E
+
+```{r}
+# Test with IRR of E on Y = 10
+set.seed(1003)
+tic("Cohort simulation long format")
+test3 <- cohort(IRR_E = 10) 
+toc()
+test_reformatted3 <- SCCS_reformat(test3)
+analyse_SCCS(data = test_reformatted3$data)
+```
+
+-   Observation: Effect of E on Y is consistently null in this scenario and the above two scenarios.
