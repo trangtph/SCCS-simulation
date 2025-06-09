@@ -3,6 +3,28 @@ title: "Cohort simulation"
 format: html
 editor: visual
 ---
+```{r include=FALSE, message = FALSE}
+#Load packages and data
+if (!require("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+library(pacman)
+pacman::p_load(
+              foreach,   #foreach loop
+              stats,
+              tidyverse,
+              panelr,    # Reshape data
+              SCCS,
+              doParallel,
+              tictoc,    # Measure performance time
+              progressr, # Measure progress
+              rio,        # Export file  
+              here,
+              data.table
+              ) 
+
+options(scipen = 999)
+```
 
 This document is to illustrate the issues with the function to generate daily E and Y status.
 
@@ -33,6 +55,8 @@ cohort <-function(n = 100000, obs_time = 500, risk_window=28,
 
 E <- matrix(0L, nrow = n, ncol = obs_time)
 Y <- matrix(0L, nrow = n, ncol = obs_time)
+Ever_E <- matrix(0L, nrow = n, ncol = obs_time)
+Risk_window <- matrix(0L, nrow = n, ncol = obs_time)
 
 # Rolling sum of history of E
 
@@ -49,6 +73,7 @@ roll_E_onY <- integer (n)
 
     # Generate E (depends on  previous E)
     recent_E_onE <- roll_E_onE > 0
+    Ever_E[,t] <- recent_E_onE
     prob_E <- plogis(log_p_E + log_E_reduce_E*recent_E_onE)
     E_t <- rbinom(n, 1, prob_E)
     E[, t] <- E_t
@@ -60,7 +85,7 @@ roll_E_onY <- integer (n)
     
     # Generate Y (depends on E[t-risk_window+1, t])
     recent_E_onY <- roll_E_onY > 0
-
+    Risk_window[,t] <- recent_E_onY
     prob_Y <- plogis(log_baseline_Y + log_IRR_E*recent_E_onY)
     Y[, t] <- rbinom(n, 1, prob_Y)
     
@@ -72,8 +97,10 @@ day <- rep(1:obs_time, times = n)
 data_long <- data.frame(
   id = id,
   day = day,
-  E = as.vector(E),
-  Y = as.vector(Y)
+  E = as.vector(t(E)),
+  ever_E = as.vector(t(Ever_E)),
+  Y = as.vector(t(Y)),
+  Risk_window = as.vector(t(Risk_window))
 )
 data_long <- as.data.table(data_long)
 
@@ -86,6 +113,7 @@ Toy example to see if the algorithm to detect event history works
 ```{r}
 set.seed(1003)
 X <- matrix(rbinom(100, 1, 0.2), nrow = 5, ncol = 20)
+
 Y <- matrix(NA, nrow = 5, ncol = 20)
 recent_X_today2 <- matrix(NA, nrow = 5, ncol = 20)
 recent_X2 <- matrix(NA, nrow = 5, ncol = 20)
@@ -99,6 +127,14 @@ for (t in 1:ncol(X)){
   recent_X_today2[,t] <- recent_X_today
   Y[,t] <- 1 + 2*recent_X_today
 }
+
+id <- rep(1:nrow(X), each = ncol(X))
+day <- rep(1:ncol(X), times = nrow(X))
+data_toy <- data.frame(
+  id = id,
+  day = day,
+  X = as.vector(t(X)),
+  Y = as.vector(t(Y)))
 ```
 
 ### Function: Reshape data to SCCS-compatible format
@@ -148,14 +184,61 @@ analyse_SCCS <- function(data, risk_period = 28, rep=1){
 
 ### Test the data-generating mechanism
 
+#### Calculate daily odds of event
+
+```{r}
+# function to calculate daily odds
+daily_odds <- function(data, rep) {
+  daily_summary <- data[, .(
+  odds_Y = sum(Y) / (.N - sum(Y)),
+  odds_E = sum(E) / (.N - sum(E))
+), by = day]
+
+
+ odds <- data.frame(rep = rep,
+                    average_odds_Y = round(mean(daily_summary$odds_Y), digits = 7), 
+                    average_odds_E = round(mean(daily_summary$odds_E), digits = 7)) 
+return(odds)
+}
+```
+
+
+```{r}
+set.seed(2025)
+
+n_sim <- 100
+#handlers(global = TRUE)  # Need to run this code in the console instead or RMarkdown
+
+tic("Cohort simulation")
+
+with_progress({
+  p <- progressor(steps = n_sim)
+
+test_10 <- foreach( i = 1:n_sim, .combine="rbind") %do% {
+  p(sprintf("Iteration %d", i))  # update progress
+  data <- cohort(n = 100000, obs_time = 500, risk_window=28, 
+                               p_E = 3.2e-3,E_reduce_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2)
+  odds_Y_E <-daily_odds(data, i)
+  odds_Y_E
+}
+})
+toc()
+```
+
+
 ```{r}
 set.seed(1003)
 tic("Cohort simulation long format")
-test <- cohort() 
+test <- cohort(n = 10, obs_time = 50, risk_window=28, 
+                               p_E = 0.2,E_reduce_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2) 
 toc()
 test_reformatted <- SCCS_reformat(test)
 test_reformatted$E_freq
 analyse_SCCS(data = test_reformatted$data)
+
+
 ```
 
 
@@ -171,7 +254,6 @@ test_reformatted2$E_freq # Check the distribution of frequency of E per individu
 analyse_SCCS(data = test_reformatted2$data)
 ```
 
-Observation: changing the effect of E on E does not change the distribution of frequency of E
 
 ```{r}
 # Test with IRR of E on Y = 10
@@ -183,4 +265,3 @@ test_reformatted3 <- SCCS_reformat(test3)
 analyse_SCCS(data = test_reformatted3$data)
 ```
 
--   Observation: Effect of E on Y is consistently null in this scenario and the above two scenarios.
