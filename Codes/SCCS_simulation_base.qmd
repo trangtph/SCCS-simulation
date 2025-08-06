@@ -1,0 +1,486 @@
+---
+title: "SCCS Simulation - Base setting"
+format: 
+  html:
+    toc: true
+    toc-depth: 3  
+    toc-location: left  
+editor: visual
+---
+
+```{r include=FALSE, message = FALSE}
+#Load packages and data
+if (!require("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+library(pacman)
+pacman::p_load(
+              foreach,     # foreach loop
+              stats,
+              tidyverse,
+              panelr,      # Reshape data
+              SCCS,
+              tictoc,      # Measure performance time
+              progressr,   # Measure progress
+              rio,         # Export file  
+              here,
+              data.table,
+              magrittr,     # To use the pipe %>%
+              doRNG,        # Reproducible parallel session
+              future
+              ) 
+
+options(scipen = 999)
+```
+
+# Data-generating mechanism
+
+Four variables:
+
+-   Exposure E (binary): One dose of vaccine
+
+-   Outcome Y (binary)
+
+-   Time-varying confounder C of E and Y, that is affected by past E: COVID-19 infection
+
+-   Confounder U of C and Y (binary): access to care.
+
+Data generating process for base case:
+
+-   Generate daily status of each variable for cohort of 100,000 individual during 500 days of observation period.
+
+-   U: Daily odds $10^-3$.Duration of effect on C and Y: 90 days
+
+-   C: baseline odds $10^{-3}$. Being infected during days [t-90, t-1] reduce that odds by 70%. Being vaccinated during [t-90,t-1] reduce that odds by 80%.U = 1 during [t-89, t]increases the odds 2 times.The daily odds of the C on day $t$ of individual $i$ is calculated from the logistic regression model:
+
+$$Logit[Pr(C_{it} = 1)] = \alpha_0 + \alpha_1*C_{i[t-90,t-1]} + \alpha_2*E_{i[t-90,t-1]} +\alpha_3*U_{i[t-89,t]}$$
+
+-   E: baseline odds $3.2*10^{-3}$ (so that 80% of the sample get vaccinated within 500 days). Once the subject got vaccinated, odds of next vaccination reduces by 99.9% Getting infected on that day and previous 27 days ([t-27,t]) reduces the odds by 75%.
+
+$$Logit[Pr(E_{it} = 1)] = \beta_0 + \beta_1*E_{i[1,t-1]} + \beta_2*C_{i[t-27,t]}$$
+
+-   Y: Function of baseline event odds $\gamma_0 = ln(2e-5)$ (outcome is rare), E status in [t-risk_window+1,t]: $\gamma_1 = ln(2)$, C status in [t-27,t]: $\gamma_2 = ln(5)$, U status in [t-89, t]: $\gamma_3 = ln(5)$
+
+$$Logit[Pr(Y_{ij} = 1)] = \gamma_0 + \gamma_1*E_{i[t-riskwindow]} + \gamma_2*C_{i[t-27,t]} + \gamma_3*U_{i[t-89,t]}$$
+
+-   Based on the daily probability, generate the binary variables using a Bernoulli trial
+-   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
+
+# Function: Generate data
+```{r}
+cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+{
+  log_p_U <- log(p_U)
+  log_p_C <- log(p_C)
+  log_p_E <- log(p_E)
+  log_U_on_C <- log(U_on_C)
+  log_U_on_Y <- log(U_on_Y)
+  log_C_on_C <- log(C_on_C)
+  log_E_on_C <- log(E_on_C)
+  log_C_on_E <- log(C_on_E)
+  log_E_on_E <- log(E_on_E)
+  log_baseline_Y <- log(baseline_Y)
+  log_IRR_E <- log(IRR_E)
+  log_IRR_C <- log(IRR_C)    
+
+U <- matrix(0L, nrow = n, ncol = obs_time)
+C <- matrix(0L, nrow = n, ncol = obs_time)
+E <- matrix(0L, nrow = n, ncol = obs_time)
+Y <- matrix(0L, nrow = n, ncol = obs_time)
+
+# Rolling sum of history of U, C and E
+
+roll_U_onC <- integer(n)
+roll_U_onY <- integer(n)
+roll_C_onC <- integer(n)
+roll_E_onC <- integer(n)
+roll_C_onE <- integer(n)
+roll_E_onE <- integer(n)
+roll_C_onY <- integer(n)
+roll_E_onY <- integer(n)
+
+
+  for (t in 1:obs_time) {
+# Remove U, C or E events that fall outside the look-back window (28 days for C on E, C on Y, E on Y, and 91 days for U on C, U on Y, C on C and E on C)
+    if (t > 28) {
+      roll_C_onE <- roll_C_onE - C[, t- 28]
+      roll_C_onY <- roll_C_onY - C[, t - 28]
+
+    }
+    if (t > risk_window) {
+      roll_E_onY <- roll_E_onY - E[, t - risk_window]
+    }
+    if (t > 91) {
+      roll_U_onC <- roll_U_onC - U[, t - 91]
+      roll_U_onY <- roll_U_onY - U[, t - 91]                            
+      roll_C_onC <- roll_C_onC - C[, t - 91]
+      roll_E_onC <- roll_E_onC - E[, t - 91]
+    }
+
+    # Generate U
+    prob_U <- plogis(log_p_U)
+    U_t <- rbinom(n, 1, prob_U)
+    U[, t] <- U_t
+    
+    # Update rolling of U
+    roll_U_onC <- roll_U_onC + U_t
+    roll_U_onY <- roll_U_onY + U_t
+    
+    # Generate C (depends on U[t-89, t], C[t-90, t-1] and E[t-90, t-1])
+    recent_U_onC <- roll_U_onC > 0 # Check recent history of U  
+    recent_C_onC <- roll_C_onC > 0 # Check recent history of C
+    recent_E_onC <- roll_E_onC > 0 # Check recent history of E
+    prob_C <- plogis(log_p_C + log_U_on_C*recent_U_onC + log_C_on_C*recent_C_onC + log_E_on_C*recent_E_onC)
+    C_t <- rbinom(n, 1, prob_C)
+    C[, t] <- C_t
+    
+    # Update rolling of C 
+    roll_C_onC <- roll_C_onC + C_t
+    roll_C_onE <- roll_C_onE + C_t
+    roll_C_onY <- roll_C_onY + C_t
+    
+    # Generate E (depends on C[t-27, t] and E[1, t-1])
+    recent_C_onE <- roll_C_onE > 0
+    recent_E_onE <- roll_E_onE > 0
+    prob_E <- plogis(log_p_E + log_C_on_E*recent_C_onE + log_E_on_E*recent_E_onE)
+    E_t <- rbinom(n, 1, prob_E)
+    E[, t] <- E_t
+    
+    # Update rolling of E
+    roll_E_onE <- roll_E_onE + E_t
+    roll_E_onC <- roll_E_onC + E_t
+    roll_E_onY <- roll_E_onY + E_t
+    
+    
+    # Generate Y (depends on U[t-89, t] C[t-27, t], E[t-risk_window+1, t])
+    recent_U_onY <- roll_U_onY > 0
+    recent_C_onY <- roll_C_onY > 0
+    recent_E_onY <- roll_E_onY > 0
+
+    prob_Y <- plogis(log_baseline_Y + log_U_on_Y*recent_U_onY + log_IRR_E*recent_E_onY + log_IRR_C*recent_C_onY)
+    Y[, t] <- rbinom(n, 1, prob_Y)
+    
+  }
+
+# Reshape to long format
+id <- rep(1:n, each = obs_time)
+day <- rep(1:obs_time, times = n)
+data_long <- data.frame(
+  id = id,
+  day = day,
+  U = as.vector(t(U)), #transpose vector
+  C = as.vector(t(C)),
+  E = as.vector(t(E)),
+  Y = as.vector(t(Y))
+)
+data_long <- as.data.table(data_long)
+
+return(data_long)
+}
+```
+
+## Function: Reshape data to SCCS-compatible format
+
+Only keep data on date of occurence of exposure, outcome and covariates
+```{r}
+
+
+SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window){
+  Y_data <- data %>%
+    .[Y ==1 , .(id, Y_day = day)] %>%
+    .[, .row := seq_len(.N), by = id]
+  E_data <- data %>%
+    .[E ==1 , .(id, E_day = day)] %>%
+    .[, .row := seq_len(.N), by = id]
+  C_data <- data %>%
+    .[C ==1 , .(id, C_day = day)] %>%
+    .[, .row := seq_len(.N), by = id]
+
+  merge_E_C <- merge(E_data, C_data, by = c("id", ".row"), all = TRUE)
+  merge_Y_E_C <- merge(Y_data, merge_E_C, by = c("id"), all = TRUE)
+  
+  merge_Y_E_C <- merge_Y_E_C %>%
+    .[!is.na(Y_day)] %>%
+    .[ , `:=`(obs_start = 1, 
+              obs_end = 500,
+              E_end = E_day + risk_window - 1,
+              C_end = C_day + 28 - 1)]
+
+  merge_Y_E_C <- as.data.frame(merge_Y_E_C)
+
+  return(merge_Y_E_C)
+}
+
+```
+
+## Function: Analyse data
+
+### Model adjusted for C
+```{r}
+analyse_sccs_confound <- function(data, rep)
+  {
+  # Fit SCCS model
+  model <- standardsccs(event ~ E_day + C_day, 
+                       indiv= id,         # subject ID
+                       astart = obs_start,# start of observation period 
+                       aend = obs_end,    # end of observation period 
+                       aevent = Y_day,    # event time
+                       adrug = cbind(E_day, C_day), # start of exposure
+                       aedrug = cbind(E_end, C_end),  # end of risk period
+                       expogrp = list(0, 0),       # start of risk period counted from 'adrug'
+                       data = data)
+  
+  # Extract results from SCCS model
+  est_E <- coef(model)[1,1]
+  se_E <- coef(model)[1,3]
+  IRR_E <- exp(est_E)
+  IRR_E_CI_Lower <- model$conf.int[1,3]
+  IRR_E_CI_Upper <- model$conf.int[1,4]
+  est_C <- coef(model)[2,1]
+  IRR_C <- coef(model)[2,2]
+  IRR_C_CI_Lower <- model$conf.int[2,3]
+  IRR_C_CI_Upper <- model$conf.int[2,4]
+  n_event <- model$nevent
+  res <- data.frame(rep = rep, 
+                    est_E, se_E, IRR_E, IRR_E_CI_Lower, IRR_E_CI_Upper, 
+                    est_C, IRR_C, IRR_C_CI_Lower, IRR_C_CI_Upper, 
+                    n_event, 
+                    row.names = NULL)
+  return(res)
+}
+```
+
+### Model not adjusted for C
+
+```{r}
+analyse_SCCS_simple <- function(data, rep){
+
+  model <- standardsccs(event ~ E_day, 
+                       indiv= id,      # subject ID
+                       astart = obs_start,# start of observation period 
+                       aend = obs_end,    # end of observation period 
+                       aevent = Y_day, # event time
+                       adrug = E_day, # start of exposure
+                       aedrug = E_end,  # end of risk period
+                       expogrp = 0,       # start of risk period counted from 'adrug'
+                       data = data)
+ # Extract results from SCCS model
+  est_E <- coef(model)[1,1]
+  se_E <- coef(model)[1,3]
+  IRR_E <- exp(est_E)
+  IRR_E_CI_Lower <- model$conf.int[1,3]
+  IRR_E_CI_Upper <- model$conf.int[1,4]
+  est_C <- NA
+  IRR_C <- NA
+  IRR_C_CI_Lower <- NA
+  IRR_C_CI_Upper <- NA
+  n_event <- model$nevent
+  res <- data.frame(rep = rep, 
+                    est_E, se_E, IRR_E, IRR_E_CI_Lower, IRR_E_CI_Upper, 
+                    est_C, IRR_C, IRR_C_CI_Lower, IRR_C_CI_Upper, 
+                    n_event, 
+                    row.names = NULL)
+  return(res)
+}
+```
+
+## Function: Bias quantification
+
+```{r}
+bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
+{
+  true_gamma1 = log(true_IRR_E)
+  true_gamma2 = log(true_IRR_C)
+
+  # Number of missing values of estimated beta1 (e.g due to convergence)
+  missing_gamma1 <- sum(is.na(result_table$est_E))
+  
+  # bias
+  gamma_1_hat <- mean(result_table[,"est_E"])
+  bias_gamma_1 <- gamma_1_hat - true_gamma1
+  
+  gamma_2_hat <- mean(result_table[,"est_C"])
+  bias_gamma_2 <- gamma_2_hat - true_gamma2
+  
+  # Coverage
+  result_table$coverage_IRR_E <- with(result_table,
+                                    IRR_E_CI_Lower <= true_IRR_E & IRR_E_CI_Upper >= true_IRR_E)
+  coverage_irr_E <- mean(result_table$coverage_IRR_E)
+  
+  result_table$coverage_IRR_C <- with(result_table,
+                                    IRR_C_CI_Lower <= true_IRR_C & IRR_C_CI_Upper >= true_IRR_C)
+  coverage_irr_C <- mean(result_table$coverage_IRR_C)  
+  
+  performance <- data.frame(missing_gamma1, bias_gamma_1, coverage_irr_E, bias_gamma_2, coverage_irr_C)
+  
+  performance
+}
+```
+
+# Test the functions
+
+Test each function separately
+```{r}
+set.seed(17)
+tic("Cohort simulation, confounder by past exposure with U") # 22 sec
+chosen_risk_window <- 28
+test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+toc()
+
+test_reformatted <- SCCS_reformat_confound(test)
+
+analyse_sccs_confound(test_reformatted, rep = 1)
+
+```
+
+### Test 1: base case
+
+Expect to get biased effect of E even when using the full model (adjusted for C).
+
+```{r}
+set.seed(1997) 
+registerDoRNG(1997) 
+
+# Set up parallel sessions
+plan(multisession, workers = 4)
+
+n_sim <- 1000
+chosen_risk_window <- 28
+
+tic("Parallel simulation") # 
+results_list <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i)
+  result
+                        }
+
+toc() # measure run time 
+
+bias_quantification_result <-bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = results_list)
+bias_quantification_result <- bias_quantification_result %>%
+  mutate(mean_nr_event = mean(results_list$n_event))
+bias_quantification_result
+```
+
+
+### Test 2: No effect of U on Y and C on Y. 
+
+Expect to get unbiased effect of E when using the simple model (not adjusted for C).
+
+```{r}
+set.seed(1997) 
+registerDoRNG(1997) 
+
+# Set up parallel sessions
+plan(multisession, workers = 4)
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+tic("Parallel simulation") # 
+results_list2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 5, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 1)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=1, result_table = results_list2)
+
+```
+
+## Test 3: No effect of U.
+
+Expect to get biased effect of E when use simple model but unbiased effect when use model adjusted for C.
+
+
+```{r}
+# Simple model
+
+set.seed(1990) 
+registerDoRNG(1990) 
+
+# Set up parallel sessions
+plan(multisession, workers = 4)
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+tic("Parallel simulation") # 
+results_list <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_simple(data= data_SCCS, rep = i)
+  result
+                        }
+
+toc() # measure run time # 9234.47 sec
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = results_list)
+
+```
+
+```{r}
+# Full model
+
+set.seed(1990) 
+registerDoRNG(1990) 
+
+# Set up parallel sessions
+plan(multisession, workers = 4)
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+tic("Parallel simulation") # 
+results_list <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i)
+  result
+                        }
+
+toc() # measure run time # 9234.47 sec
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = results_list)
+
+```
