@@ -51,15 +51,15 @@ Data generating process for base case:
 
 -   U: Daily odds $10^-3$.Duration of effect on C and Y: 90 days
 
--   C: baseline odds $10^{-3}$. Being infected during days [t-90, t-1] reduce that odds by 70%. Being vaccinated during [t-90,t-1] reduce that odds by 80%.U = 1 during [t-89, t]increases the odds 2 times.The daily odds of the C on day $t$ of individual $i$ is calculated from the logistic regression model:
+-   C: baseline odds $10^{-3}$. Being infected during days \[t-90, t-1\] reduce that odds by 70%. Being vaccinated during \[t-90,t-1\] reduce that odds by 80%.U = 1 during \[t-89, t\]increases the odds 2 times.The daily odds of the C on day $t$ of individual $i$ is calculated from the logistic regression model:
 
 $$Logit[Pr(C_{it} = 1)] = \alpha_0 + \alpha_1*C_{i[t-90,t-1]} + \alpha_2*E_{i[t-90,t-1]} +\alpha_3*U_{i[t-89,t]}$$
 
--   E: baseline odds $3.2*10^{-3}$ (so that 80% of the sample get vaccinated within 500 days). Once the subject got vaccinated, odds of next vaccination reduces by 99.9% Getting infected on that day and previous 27 days ([t-27,t]) reduces the odds by 75%.
+-   E: baseline odds $3.2*10^{-3}$ (so that 80% of the sample get vaccinated within 500 days). Once the subject got vaccinated, odds of next vaccination reduces by 99.9% Getting infected on that day and previous 27 days (\[t-27,t\]) reduces the odds by 75%.
 
 $$Logit[Pr(E_{it} = 1)] = \beta_0 + \beta_1*E_{i[1,t-1]} + \beta_2*C_{i[t-27,t]}$$
 
--   Y: Function of baseline event odds $\gamma_0 = ln(2e-5)$ (outcome is rare), E status in [t-risk_window+1,t]: $\gamma_1 = ln(2)$, C status in [t-27,t]: $\gamma_2 = ln(5)$, U status in [t-89, t]: $\gamma_3 = ln(5)$
+-   Y: Function of baseline event odds $\gamma_0 = ln(2e-5)$ (outcome is rare), E status in \[t-risk_window+1,t\]: $\gamma_1 = ln(2)$, C status in \[t-27,t\]: $\gamma_2 = ln(5)$, U status in \[t-89, t\]: $\gamma_3 = ln(5)$
 
 $$Logit[Pr(Y_{ij} = 1)] = \gamma_0 + \gamma_1*E_{i[t-riskwindow]} + \gamma_2*C_{i[t-27,t]} + \gamma_3*U_{i[t-89,t]}$$
 
@@ -67,6 +67,7 @@ $$Logit[Pr(Y_{ij} = 1)] = \gamma_0 + \gamma_1*E_{i[t-riskwindow]} + \gamma_2*C_{
 -   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
 
 # Function: Generate data
+
 ```{r}
 cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 5, U_on_Y = 5,     
@@ -167,17 +168,15 @@ roll_E_onY <- integer(n)
   }
 
 # Reshape to long format
-id <- rep(1:n, each = obs_time)
-day <- rep(1:obs_time, times = n)
-data_long <- data.frame(
-  id = id,
-  day = day,
+
+data_long <- data.table(
+  id = rep(1:n, each = obs_time),
+  day = rep(1:obs_time, times = n),
   U = as.vector(t(U)), #transpose vector
   C = as.vector(t(C)),
   E = as.vector(t(E)),
   Y = as.vector(t(Y))
 )
-data_long <- as.data.table(data_long)
 
 return(data_long)
 }
@@ -186,6 +185,7 @@ return(data_long)
 ## Function: Reshape data to SCCS-compatible format
 
 Only keep data on date of occurence of exposure, outcome and covariates
+
 ```{r}
 
 
@@ -217,9 +217,40 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window){
 
 ```
 
+```{r}
+SCCS_reformat_confound2 <- function(data, risk_window = chosen_risk_window){
+  Y_data <- data[Y == 1, .(id, Y_day = day)]
+  Y_data[, .row := seq_len(.N), by = id]
+  
+  E_data <- data[E == 1, .(id, E_day = day)]
+  E_data[, .row := seq_len(.N), by = id]
+  
+  C_data <- data[C == 1, .(id, C_day = day)]
+  C_data[, .row := seq_len(.N), by = id]
+  
+  merge_E_C <- merge(E_data, C_data, by = c("id", ".row"), all = TRUE)
+  merge_Y_E_C <- merge(Y_data, merge_E_C, by = "id", all = TRUE)
+  
+  # Keep only rows with observed events
+  merge_Y_E_C <- merge_Y_E_C[!is.na(Y_day)]
+  
+  # Add observation window and end of risk periods
+  merge_Y_E_C[, `:=`(
+    obs_start = 1,
+    obs_end = 500,
+    E_end = E_day + risk_window - 1,
+    C_end = C_day + 28 - 1
+  )]
+  
+  return(as.data.frame(merge_Y_E_C))
+  }
+```
+
+
 ## Function: Analyse data
 
 ### Model adjusted for C
+
 ```{r}
 analyse_sccs_confound <- function(data, rep)
   {
@@ -324,6 +355,7 @@ bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
 # Test the functions
 
 Test each function separately
+
 ```{r}
 set.seed(17)
 tic("Cohort simulation, confounder by past exposure with U") # 22 sec
@@ -335,15 +367,41 @@ test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chose
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
 toc()
 
+tic("reformatting")
 test_reformatted <- SCCS_reformat_confound(test)
+toc()
 
+tic("Fitting model")
 analyse_sccs_confound(test_reformatted, rep = 1)
-
+toc()
 ```
+```{r}
+set.seed(17)
+tic("Cohort simulation, confounder by past exposure with U") # 22 sec
+chosen_risk_window <- 28
+test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+toc()
+
+tic("reformatting")
+test_reformatted <- SCCS_reformat_confound2(test)
+toc()
+
+tic("Fitting model")
+analyse_sccs_confound(test_reformatted, rep = 1)
+toc()
+```
+
 
 ### Test 1: base case
 
 Expect to get biased effect of E even when using the full model (adjusted for C).
+
+Results: bias_gamma_1:-0.016, coverage_IRR_E: 94.4%
+$\rightarrow$: still very low bias. Suspicion: the mediating path E->C->Y has low effect, thus the collider stratification bias E->U->Y introduced when adjusting for C is also low.
 
 ```{r}
 set.seed(1997) 
@@ -376,12 +434,15 @@ bias_quantification_result <-bias_quantification(true_IRR_E=2, true_IRR_C=5, res
 bias_quantification_result <- bias_quantification_result %>%
   mutate(mean_nr_event = mean(results_list$n_event))
 bias_quantification_result
+
+
 ```
 
-
-### Test 2: No effect of U on Y and C on Y. 
+### Test 2: No effect of U on Y and C on Y.
 
 Expect to get unbiased effect of E when using the simple model (not adjusted for C).
+
+Results: bias_gamma_1 -0.0103, coverage IRR_E = 95.2% (as expected)
 
 ```{r}
 set.seed(1997) 
@@ -418,6 +479,9 @@ bias_quantification(true_IRR_E=2, true_IRR_C=1, result_table = results_list2)
 
 Expect to get biased effect of E when use simple model but unbiased effect when use model adjusted for C.
 
+Results (as expected): 
+- Simple model: bias_gamma_1 = -0.079, coverage IRR_E = 0.9
+- Full model: bias_gamma_1 = -0.0003, coverage IRR E = 95.5%, bias_gamma_2 = -0.0018, coverage = 0.953
 
 ```{r}
 # Simple model
