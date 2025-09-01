@@ -1,0 +1,677 @@
+---
+title: "SCCS_sim_check"
+format: 
+  html:
+    toc: true
+    toc-depth: 3  
+    toc-location: left  
+editor: visual
+---
+
+# Load source file and packages
+
+```{r}
+if (!require("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+library(pacman)
+pacman::p_load(
+  foreach,     # foreach loop
+  stats,
+  extraDistr,
+  dplyr,
+  SCCS,
+  tictoc,      # Measure performance time
+  rio,         # Export file  
+  here,
+  data.table,
+  magrittr,     # To use the pipe %>%
+  doRNG,        # Reproducible parallel session
+  doFuture,
+  RhpcBLASctl   # Control threads in parallel session
+) 
+
+source("SCCS_sim_functions.R")
+```
+
+# Test each function separately
+
+```{r}
+set.seed(15)
+
+tic("data generating")
+data_test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = 28,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 1e-7,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+toc()
+
+tic("analysis")
+
+  data_SCCS_test <- SCCS_reformat_confound(data_test, risk_window = 28)
+  result_test <-analyse_sccs_confound(data= data_SCCS_test, rep = 1, C_adjust = FALSE)
+toc()
+  result_test
+```
+
+# Test 1: Only mediating effect of C, ignore C in model
+
+OR E -\> C = 0.25: estimated effect (total effect) smaller than direct effect OR E -\> C = 5: estimated effect (total effect) larger than direct effect
+
+```{r}
+set.seed(1997) 
+registerDoRNG(1997) 
+
+# Set up parallel sessions
+plan(multisession, workers = 4)
+
+n_sim <- 5
+chosen_risk_window <- 28
+
+tic("Parallel simulation") # 
+# OR E -> C = 0.25
+test_1.1 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 1e-7,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.1)
+
+# OR E -> C = 5
+
+test_1.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.2)
+
+```
+
+# Grid of scenarios: ignore C
+
+```{r}
+# Parameter grids
+p_C_vals    <- c(5e-4, 1e-3, 5e-3)
+C_on_E_vals <- c(0.25, 1, 5)
+IRR_C_vals  <- c(2, 5, 15)
+IRR_E_vals  <- c(1.01, 2, 5)
+chosen_risk_window <- c(10, 50)
+
+scenarios <- expand.grid(p_C = p_C_vals,
+                         IRR_C = IRR_C_vals,
+                         IRR_E = IRR_E_vals,
+                         ConE = C_on_E_vals,
+                         risk_win = chosen_risk_window)
+
+scenarios$scenario_id <- seq(1:nrow(scenarios))
+scenarios$scenario_name <- with(scenarios, 
+                                paste0("Scen_",scenario_id,"_pC", p_C, "_ConE", ConE,
+                                       "_IRRC", IRR_C, "_IRRE",
+                                       IRR_E, "_",risk_win, "d"))
+scenarios$seed <- scenarios$p_C * 10^5+scenarios$IRR_C*10 # seq(1:nrow(scenarios))                                          
+
+#data.table::fwrite(scenarios, here("SCCS_Simulation", "Scenarios_ignore_C.csv"))
+
+```
+
+# nested foreach
+
+Use dopar
+
+```{r}
+n_sim <- 2   
+
+
+
+plan(multisession, workers = 4)
+
+set.seed(1997)
+registerDoRNG(1997)
+
+tic("dopar")
+results_all <- foreach(s = 1:5,
+                       .combine = rbind,
+                       .packages = c("extraDistr", "dplyr", "SCCS", "data.table")) %dopar% {
+  p_C   <- scenarios$p_C[s]
+  C_on_E <- scenarios$ConE[s]
+  IRR_C <- scenarios$IRR_C[s]
+  IRR_E <- scenarios$IRR_E[s]
+  risk_win <- scenarios$risk_win[s]
+  scen_name <- scenarios$scenario_name[s]
+
+  # Run simulation for one scenario
+  sim_res <- foreach(i = 1:n_sim,
+                     .combine = rbind,
+                     .options.future = list(packages = c("extraDistr","dplyr","SCCS","data.table"),
+                                            seed = TRUE)) %dofuture% {
+    data <- cohort_time_var_past_e_u(
+      n = 100000, obs_time = 500, risk_window = risk_win,
+      p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+      p_C = p_C, C_on_C = 0.3, E_on_C = 0.2,
+      p_E = 3.2e-3, C_on_E = C_on_E, E_on_E = 1e-7,
+      baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = IRR_C
+    )
+    data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+    analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  }
+  # Export results
+  out_file <- paste0(scen_name, ".csv")
+  data.table::fwrite(sim_res, here("Results","Test1", out_file))
+  
+  # Evaluate bias and coverage
+  perf <- bias_quantification(true_IRR_E = IRR_E, true_IRR_C = IRR_C,
+                              result_table = sim_res)
+
+  cbind(scenarios[s, ], perf)
+                       }
+toc()
+
+results_all
+```
+
+## Use doFuture
+
+### Outer sequential, inner parallel
+
+```{r}
+n_sim <- 3   
+
+plan(list(tweak(sequential), tweak(multisession, workers = I(4))))
+
+registerDoRNG()
+set.seed(1997)
+
+tic("dofuture, inner parallel")
+results_all <- foreach(s = 1:4,
+                       .combine = rbind,
+                       .options.future = list(seed = TRUE)) %dofuture% {
+  p_C   <- scenarios$p_C[s]
+  C_on_E <- scenarios$ConE[s]
+  IRR_C <- scenarios$IRR_C[s]
+  IRR_E <- scenarios$IRR_E[s]
+  risk_win <- scenarios$risk_win[s]
+  scen_name <- scenarios$scenario_name[s]
+
+  # Run simulation for one scenario
+  sim_res <- foreach(i = 1:n_sim,
+                     .combine = rbind,
+                     .options.future = list(packages = c("extraDistr","dplyr","SCCS","data.table"),
+                                            seed = TRUE)) %dofuture% {
+    data <- cohort_time_var_past_e_u(
+      n = 100000, obs_time = 500, risk_window = risk_win,
+      p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+      p_C = p_C, C_on_C = 0.3, E_on_C = 0.2,
+      p_E = 3.2e-3, C_on_E = C_on_E, E_on_E = 1e-7,
+      baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = IRR_C
+    )
+    data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+    analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  }
+  # Export results
+  out_file <- paste0(scen_name, ".csv")
+  data.table::fwrite(sim_res, here("Results","Test2", out_file))
+  
+  # Evaluate bias and coverage
+  perf <- bias_quantification(true_IRR_E = IRR_E, true_IRR_C = IRR_C,
+                              result_table = sim_res)
+
+  cbind(scenarios[s, ], perf)
+                       }
+toc() #228s
+
+results_all
+
+####################################
+n_sim <- 3   
+
+plan(list(tweak(sequential), tweak(multisession, workers = I(4))))
+
+registerDoRNG()
+set.seed(1997)
+
+tic("dofuture, inner parallel")
+results_all2 <- foreach(s = 1:2,
+                       .combine = rbind,
+                       .options.future = list(seed = TRUE)) %dofuture% {
+  p_C   <- scenarios$p_C[s]
+  C_on_E <- scenarios$ConE[s]
+  IRR_C <- scenarios$IRR_C[s]
+  IRR_E <- scenarios$IRR_E[s]
+  risk_win <- scenarios$risk_win[s]
+  scen_name <- scenarios$scenario_name[s]
+
+  # Run simulation for one scenario
+  sim_res <- foreach(i = 1:n_sim,
+                     .combine = rbind,
+                     .options.future = list(packages = c("extraDistr","dplyr","SCCS","data.table"),
+                                            seed = TRUE)) %dofuture% {
+    data <- cohort_time_var_past_e_u(
+      n = 100000, obs_time = 500, risk_window = risk_win,
+      p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+      p_C = p_C, C_on_C = 0.3, E_on_C = 0.2,
+      p_E = 3.2e-3, C_on_E = C_on_E, E_on_E = 1e-7,
+      baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = IRR_C
+    )
+    data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+    analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  }
+  # Export results
+  out_file <- paste0(scen_name, ".csv")
+  data.table::fwrite(sim_res, here("Results","Test2", out_file))
+  
+  # Evaluate bias and coverage
+  perf <- bias_quantification(true_IRR_E = IRR_E, true_IRR_C = IRR_C,
+                              result_table = sim_res)
+
+  cbind(scenarios[s, ], perf)
+                       }
+toc() #294s
+
+results_all2
+
+################################
+n_sim <- 3   
+
+plan(list(tweak(sequential), tweak(multisession, workers = I(4))))
+
+registerDoRNG()
+set.seed(1997)
+
+tic("dofuture, inner parallel")
+results_all3 <- foreach(s = 3:4,
+                       .combine = rbind,
+                       .options.future = list(seed = TRUE)) %dofuture% {
+  p_C   <- scenarios$p_C[s]
+  C_on_E <- scenarios$ConE[s]
+  IRR_C <- scenarios$IRR_C[s]
+  IRR_E <- scenarios$IRR_E[s]
+  risk_win <- scenarios$risk_win[s]
+  scen_name <- scenarios$scenario_name[s]
+
+  # Run simulation for one scenario
+  sim_res <- foreach(i = 1:n_sim,
+                     .combine = rbind,
+                     .options.future = list(packages = c("extraDistr","dplyr","SCCS","data.table"),
+                                            seed = TRUE)) %dofuture% {
+    data <- cohort_time_var_past_e_u(
+      n = 100000, obs_time = 500, risk_window = risk_win,
+      p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+      p_C = p_C, C_on_C = 0.3, E_on_C = 0.2,
+      p_E = 3.2e-3, C_on_E = C_on_E, E_on_E = 1e-7,
+      baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = IRR_C
+    )
+    data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+    analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  }
+  # Export results
+  out_file <- paste0(scen_name, ".csv")
+  data.table::fwrite(sim_res, here("Results","Test2", out_file))
+  
+  # Evaluate bias and coverage
+  perf <- bias_quantification(true_IRR_E = IRR_E, true_IRR_C = IRR_C,
+                              result_table = sim_res)
+
+  cbind(scenarios[s, ], perf)
+                       }
+toc() #103s
+
+results_all3
+```
+
+### Nested parallelization
+
+```{r}
+n_sim <- 5   
+
+plan(list(tweak(multisession, workers = 2), 
+          tweak(multisession, workers = I(2))))
+
+set.seed(1997)
+registerDoRNG(1997)
+
+tic("dofuture, inner parallel")
+results_all <- foreach(s = 1:3,
+                       .combine = rbind,
+                       .options.future = list(seed = TRUE)) %dofuture% {
+  p_C   <- scenarios$p_C[s]
+  C_on_E <- scenarios$ConE[s]
+  IRR_C <- scenarios$IRR_C[s]
+  IRR_E <- scenarios$IRR_E[s]
+  risk_win <- scenarios$risk_win[s]
+  scen_name <- scenarios$scenario_name[s]
+
+  # Run simulation for one scenario
+  sim_res <- foreach(i = 1:n_sim,
+                     .combine = rbind,
+                     .options.future = list(packages = c("extraDistr","dplyr","SCCS","data.table"),
+                                            seed = TRUE)) %dofuture% {
+    data <- cohort_time_var_past_e_u(
+      n = 100000, obs_time = 500, risk_window = risk_win,
+      p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+      p_C = p_C, C_on_C = 0.3, E_on_C = 0.2,
+      p_E = 3.2e-3, C_on_E = C_on_E, E_on_E = 1e-7,
+      baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = IRR_C
+    )
+    data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+    analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  }
+  # Export results
+  out_file <- paste0(scen_name, ".csv")
+  data.table::fwrite(sim_res, here("Results","Test2", out_file))
+  
+  # Evaluate bias and coverage
+  perf <- bias_quantification(true_IRR_E = IRR_E, true_IRR_C = IRR_C,
+                              result_table = sim_res)
+
+  cbind(scenarios[s, ], perf)
+                       }
+toc() #294s
+
+results_all
+```
+
+### Use %do% in outer loop
+
+```{r}
+n_sim <- 2   
+out_directory <- here::here("Results", "Test2")
+
+plan(multisession, workers = 4)
+
+registerDoRNG(1997)
+
+tic("dofuture, outer %do%")
+results_all5 <- foreach(s = 3:4,
+                       .combine = rbind) %do% {
+  p_C   <- scenarios$p_C[s]
+  C_on_E <- scenarios$ConE[s]
+  IRR_C <- scenarios$IRR_C[s]
+  IRR_E <- scenarios$IRR_E[s]
+  risk_win <- scenarios$risk_win[s]
+  scen_name <- scenarios$scenario_name[s]
+
+  # Run simulation for one scenario
+  sim_res <- foreach(i = 1:n_sim,
+                     .combine = rbind,
+                     .options.future = list(packages = c("extraDistr","dplyr","SCCS","data.table"),
+                                            seed = TRUE)) %dofuture% {
+    seed_i <- i*10^6 + s*100 # scenarios$seed[s] + i  #  i*10^6 + s*100                                          
+    #set.seed(seed_i)                                          
+    data.table::setDTthreads(1L)
+    if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
+      RhpcBLASctl::blas_set_num_threads(1L)
+      RhpcBLASctl::omp_set_num_threads(1L)
+    }
+                                              
+    data <- cohort_time_var_past_e_u(
+      n = 100000, obs_time = 500, risk_window = risk_win,
+      p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+      p_C = p_C, C_on_C = 0.3, E_on_C = 0.2,
+      p_E = 3.2e-3, C_on_E = C_on_E, E_on_E = 1e-7,
+      baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = IRR_C
+    )
+    data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+    analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE, seed_i=seed_i)
+  }
+  # Export results
+     out_file <- file.path(out_directory, paste0(scen_name, ".csv"))
+     data.table::fwrite(sim_res, out_file)  
+
+  
+  # Evaluate bias and coverage
+  perf <- bias_quantification(true_IRR_E = IRR_E, true_IRR_C = IRR_C,
+                              result_table = sim_res)
+
+  cbind(scenarios[s, ], perf)
+                       }
+toc() #96 sec
+
+results_all5
+```
+
+# Grid: Adjust C
+
+```{r}
+
+# Parameter grids
+p_U_vals    <- c(1e-3, 5e-3)
+U_on_Y_vals <- c(0.25, 2, 5, 15)
+E_on_C_vals <- c(0.2, 2)
+IRR_E_vals  <- c(1, 2, 5)
+chosen_risk_window <- c(10, 50)
+
+scenarios_adjC <- expand.grid(p_U = p_U_vals,
+                         UonY = U_on_Y_vals,
+                         EonC = E_on_C_vals,
+                         IRR_E = IRR_E_vals,
+                         risk_win = chosen_risk_window)
+
+scenarios_adjC$scenario_id <- seq(1:nrow(scenarios_adjC))
+scenarios_adjC$scenario_name <- with(scenarios_adjC, 
+                                paste0("Scen_",scenario_id,"_pU", p_U, "_UonY", UonY,
+                                       "_EonC", EonC, "_IRRE",
+                                       IRR_E, "_",risk_win, "d"))
+
+data.table::fwrite(scenarios_adjC, here("SCCS_Simulation", "Scenarios_Adjust_C.csv"))
+
+# Set the directory to export files
+out_directory <- here::here("SCCS_Simulation", "Results", "Adjust_C")
+
+plan(multisession, workers = 4)
+
+registerDoRNG()
+set.seed(1010)
+
+tic("Sim: bias when adjusting for C")
+results_all_adjC <- foreach(s = 1:nrow(scenarios_adjC),
+                       .combine = rbind) %do% {
+   p_U   <- scenarios_adjC$p_U[s]
+   UonY <- scenarios_adjC$UonY[s]
+   EonC <- scenarios_adjC$EonC[s]
+   IRR_E <- scenarios_adjC$IRR_E[s]
+   risk_win <- scenarios_adjC$risk_win[s]
+   scen_name <- scenarios_adjC$scenario_name[s]
+                         
+      # Run simulation for one scenario
+      sim_res <- foreach(i = 1:n_sim,
+                        .combine = rbind,
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", 
+                                                            "data.table", "RhpcBLASctl"),
+                        seed = TRUE)) %dofuture% {
+              
+              # To avoid issues with native libraries, try keeping native libraries thread safe
+              data.table::setDTthreads(1L)
+              RhpcBLASctl::blas_set_num_threads(1L)
+              RhpcBLASctl::omp_set_num_threads(1L)
+                                                                     
+              data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = risk_win,
+                                                p_U = p_U, U_on_C = 5, U_on_Y = UonY,     
+                                                p_C = 1e-3, C_on_C = 0.3, E_on_C = EonC,
+                                                p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-7,
+                                                baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = 2
+                                                                     )
+              data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+              analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+              }
+                         
+     # Export results
+     out_file <- file.path(out_directory, paste0(scen_name, ".csv"))
+     data.table::fwrite(sim_res, out_file)
+
+     # Evaluate bias and coverage
+     perf <- bias_quantification(true_IRR_E = IRR_E, true_IRR_C = 2,
+                                  result_table = sim_res)
+                         
+     cbind(scenarios_adjC[s, ], perf)
+}
+
+data.table::fwrite(results_all_adjC, here("SCCS_Simulation", "Results","Adjust_C", "Bias_adjC.csv"))
+View(results_all_adjC)
+
+toc()
+```
+
+# Recreate the bias quantification results
+
+```{r}
+
+# list all csv files in the folder
+files <- list.files(path = here("Results", "Adjust_C2"),pattern = "^Scen_.*\\.csv$")
+
+# Helper function to parse scenario info from filenames
+parse_scenario <- function(fname) {
+  fname_clean <- basename(fname)
+  fname_core  <- sub("\\.csv$", "", fname_clean)
+  parts <- strsplit(fname_core, "_")[[1]]
+  
+  # Expect structure: Scen_<index>_pU..._UonY..._EonC..._IRRE..._Xd
+  p_U   <- as.numeric(sub("pU", "", parts[3]))
+  UonY  <- as.numeric(sub("UonY", "", parts[4]))
+  EonC  <- as.numeric(sub("EonC", "", parts[5]))
+  IRR_E <- as.numeric(sub("IRRE", "", parts[6]))
+  riskw <- as.numeric(sub("d", "", parts[7]))
+  
+  data.frame(
+    scenario_index = as.integer(parts[2]),
+    p_U, UonY, EonC, IRR_E,
+    risk_window = riskw,
+    filename = fname_clean
+  )
+}
+setwd(here("Results", "Adjust_C2"))
+# Loop through files and rebuild results
+results_list <- lapply(files, function(f) {
+  sim_res <- read.csv(here("Results", "Adjust_C2",f))
+  scen <- parse_scenario(f)
+  summary <- bias_quantification(true_IRR_E = scen$IRR_E,
+                                 true_IRR_C = 2,
+                                 result_table = sim_res)
+  list(
+    scenario = scen,
+    replicate_results = sim_res,
+    summary = cbind(scen, summary)
+  )
+})
+
+# Combine all summaries into one table
+results_all <- rbindlist(lapply(results_list, function(x) x$summary))
+
+results_all2 <- results_all %>% mutate(abs_bias = abs(bias_IRR_E)) %>% arrange(desc(abs_bias)) %>% select(-c("filename", "missing_gamma1"))
+
+# save everything
+#saveRDS(list(
+#  results_list = results_list,   # list with replicates + scenario info
+#  results_all = results_all      # summary table
+#), file = "sccs_sim_results.rds")
+
+
+```
+
+```{r}
+bias_adjC_17_48 <- rbind(import(here("Results", "Adjust_C2","bias_adjC_scenario_17-32.csv")), import(here("Results", "Adjust_C2","bias_adjC_scenario_33-48.csv")))
+```
+
+# David suggestion
+
+```{r}
+## DAVID: Only have one parallel layer only!
+plan(multisession, workers = min(parallel::detectCores(logical = FALSE), 16))
+ 
+registerDoRNG()
+set.seed(1010)
+ 
+# DAVID: Precompute output dir to avoid here() inside the workers. Might help.
+out_dir <- here::here("SCCS_Simulation", "Results", "Adjust_C")
+ 
+results_all_adjC <- foreach(s = seq_len(nrow(scenarios_adjC)), .combine = rbind) %do% { # DAVID: use %do% here, do not use %dofuture%
+ 
+  sim_res <- foreach(i = seq_len(n_sim),
+                     .combine = rbind,
+                     .packages = c("extraDistr","dplyr","SCCS","data.table"),
+                     .options.future = list(seed = TRUE)) %dofuture% {
+ 
+    # DAVID: To avoid issues with native libraries, try keeping native libraries thread safe?
+    data.table::setDTthreads(1L)
+    if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
+      RhpcBLASctl::blas_set_num_threads(1L)
+      RhpcBLASctl::omp_set_num_threads(1L)
+    }
+ 
+    data <- cohort_time_var_past_e_u(
+      n = 100000, obs_time = 500, risk_window = risk_win,
+      p_U = p_U, U_on_C = 5, U_on_Y = UonY,
+      p_C = 1e-3, C_on_C = 0.3, E_on_C = EonC,
+      p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-7,
+      baseline_Y = 2e-5, IRR_E = IRR_E, IRR_C = 2
+    )
+    data_SCCS <- SCCS_reformat_confound(data, risk_window = risk_win)
+    analyse_sccs_confound(data = data_SCCS, rep = i, C_adjust = TRUE)
+  }
+ 
+  out_file <- file.path(out_dir, paste0(scenarios_adjC$scenario_name[s], ".csv"))
+  data.table::fwrite(sim_res, out_file)
+ 
+  perf <- bias_quantification(true_IRR_E = scenarios_adjC$IRR_E[s],
+                              true_IRR_C = 2,
+                              result_table = sim_res)
+  cbind(scenarios_adjC[s, ], perf)
+}
+```
+
+# Example for stack overflow
+
+```{r}
+library(foreach)
+library(doFuture)
+library(doRNG)
+library(data.table)
+
+plan(multisession, workers = 2)
+registerDoRNG()
+set.seed(123)
+scenarios <- data.table(x = c(0.1, 0.1, 0.1), scenario = 1:3)
+
+out_dir <- getwd()
+
+results <- foreach(s = 1:nrow(scenarios), .combine = rbind) %do% {
+  this_x <- scenarios$x[s]
+  scen_id <- scenarios$scenario[s]
+  
+  sim_res <- foreach(i = 1:100, .combine = rbind,
+                     .options.future = list(seed = TRUE)) %dofuture% {
+           y <- rnorm(1, this_x)
+           data.frame(rep = i, y = y)
+              
+  }
+  out_file <- file.path(out_dir, paste0("scenario_", scen_id, ".csv"))
+  fwrite(sim_res, out_file)
+  
+    summary <- data.frame(scenario = scen_id, mean_y = mean(sim_res$y))  
+                        summary
+}
+
+print(results)
+```
+

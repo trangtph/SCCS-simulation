@@ -1,17 +1,12 @@
----
-title: "SCCS Simulation - Base case"
-format: 
-  html:
-    toc: true
-    toc-depth: 3  
-    toc-location: left  
-editor: visual
----
+###################################
+### Script for                  ###
+### simulating and analysing    ###
+### data.                       ###
+###################################
 
-```{r include=FALSE, message = FALSE}
-#Load packages and data
+#Load packages and data -------------------------------------------------------
 if (!require("pacman", quietly = TRUE)) {
-install.packages("pacman")
+  install.packages("pacman")
 }
 library(pacman)
 pacman::p_load(
@@ -32,44 +27,12 @@ pacman::p_load(
 ) 
 
 options(scipen = 999)
-```
 
-# Data-generating mechanism
+# Function: generate cohort data -----------------------------------------------
 
-Four variables:
+# Four variables: exposure E, outcome Y, confounder C of E and Y that is affected
+# by past E, confounder U of C and Y
 
--   Exposure E (binary): One dose of vaccine
-
--   Outcome Y (binary)
-
--   Time-varying confounder C of E and Y, that is affected by past E: COVID-19 infection
-
--   Confounder U of C and Y (binary): access to care.
-
-Data generating process for base case:
-
--   Generate daily status of each variable for cohort of 100,000 individual during 500 days of observation period.
-
--   U: Daily odds $10^-3$.Duration of effect on C and Y: 90 days
-
--   C: baseline odds $10^{-3}$. Being infected during days \[t-90, t-1\] reduce that odds by 70%. Being vaccinated during \[t-90,t-1\] reduce that odds by 80%.U = 1 during \[t-89, t\]increases the odds 2 times.The daily odds of the C on day $t$ of individual $i$ is calculated from the logistic regression model:
-
-$$Logit[Pr(C_{it} = 1)] = \alpha_0 + \alpha_1*C_{i[t-90,t-1]} + \alpha_2*E_{i[t-90,t-1]} +\alpha_3*U_{i[t-89,t]}$$
-
--   E: baseline odds $3.2*10^{-3}$ (so that 80% of the sample get vaccinated within 500 days). Once the subject got vaccinated, odds of next vaccination reduces by 99.9% Getting infected on that day and previous 27 days (\[t-27,t\]) reduces the odds by 75%.
-
-$$Logit[Pr(E_{it} = 1)] = \beta_0 + \beta_1*E_{i[1,t-1]} + \beta_2*C_{i[t-27,t]}$$
-
--   Y: Function of baseline event odds $\gamma_0 = ln(2e-5)$ (outcome is rare), E status in \[t-risk_window+1,t\]: $\gamma_1 = ln(2)$, C status in \[t-27,t\]: $\gamma_2 = ln(5)$, U status in \[t-89, t\]: $\gamma_3 = ln(5)$
-
-$$Logit[Pr(Y_{ij} = 1)] = \gamma_0 + \gamma_1*E_{i[t-riskwindow]} + \gamma_2*C_{i[t-27,t]} + \gamma_3*U_{i[t-89,t]}$$
-
--   Based on the daily probability, generate the binary variables using a Bernoulli trial
--   Each subjects could have multiple (independent) outcomes during the observation period, but with very low probability
-
-# Function: Generate data
-
-```{r}
 cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                     p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
                                     p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
@@ -172,7 +135,7 @@ cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = ch
     
   }
   
-    # Reshape to long format
+  # Reshape to long format
   
   data_long <- data.table::data.table(
     id = rep(1:n, each = obs_time),
@@ -185,13 +148,10 @@ cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = ch
   
   return(data_long)
 }
-```
 
-## Function: Reshape data to SCCS-compatible format
+# Function: Reshape data to SCCS-compatible format -------------------------------
+# Only keep data on date of occurence of exposure, outcome and covariates
 
-Only keep data on date of occurence of exposure, outcome and covariates
-
-```{r}
 SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window){
   Y_data <- data[Y == 1, .(id, Y_day = day)] #Filter rows with Y==1, select id and day columns
   Y_data[, .row := seq_len(.N), by = id] # For each individual, create event index
@@ -219,13 +179,9 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window){
   return(as.data.frame(merge_Y_E_C))
 }
 
-```
+# Function: analyse data ------------------------------------------------------
+# Two approach: ignore C or adjust for C
 
-
-## Function: Analyse data
-
-Two approaches: Adjust for C or ignoring C
-```{r}
 analyse_sccs_confound <- function(data, rep, C_adjust = TRUE)
 {
   if(C_adjust){
@@ -283,12 +239,7 @@ analyse_sccs_confound <- function(data, rep, C_adjust = TRUE)
                     )
   return(res)
 }
-```
 
-
-## Function: Bias quantification
-
-```{r}
 # Function: bias quantification ------------------------------------------------
 
 bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
@@ -333,28 +284,4 @@ bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
   
   performance
 }
-```
 
-# Test the functions
-
-Test each function separately
-
-```{r}
-set.seed(10)
-tic("Cohort simulation, confounder by past exposure with U") # 22 sec
-chosen_risk_window <- 28
-test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
-                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
-                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-7,
-                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-toc()
-
-tic("reformatting")
-test_reformatted <- SCCS_reformat_confound(test, risk_window = chosen_risk_window)
-toc()
-
-tic("Fitting model")
-analyse_sccs_confound(test_reformatted, rep = 1, C_adjust = TRUE)
-toc()
-```

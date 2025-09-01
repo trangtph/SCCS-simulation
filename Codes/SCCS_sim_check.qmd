@@ -1,0 +1,574 @@
+---
+title: "SCCS_sim_check"
+format: 
+  html:
+    toc: true
+    toc-depth: 3  
+    toc-location: left  
+editor: visual
+---
+
+This script is to check the sanity of the data generating mechanism. We check the settings where there are no biased expected, and where there are predictable bias.  
+
+# Load source file and packages
+
+```{r}
+if (!require("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+library(pacman)
+pacman::p_load(
+  foreach,     # foreach loop
+  stats,
+  dplyr,
+  extraDistr,
+  SCCS,
+  tictoc,      # Measure performance time
+  rio,         # Export file  
+  here,
+  data.table,
+  magrittr,     # To use the pipe %>%
+  doRNG,        # Reproducible parallel session
+  doFuture
+) 
+
+source("SCCS_sim_functions.R")
+```
+
+# Test 1: Setting: Only mediating effect of C, Approach: ignore C in model
+
+## 1.1. OR E -\> C = 0.25: Expectation: estimated effect (total effect) smaller than direct effect
+
+Result: downward bias -0.029, percent bias 4.18%, coverage 94.2% (as expected)
+
+## 1.2. OR E -\> C = 5: Expectation: estimated effect (total effect) larger than direct effect
+
+Result: Upward bias, Percent bias 15.9%, coverage 77.8% (as expected)
+
+```{r}
+# Set up parallel sessions
+plan(multisession, workers = 32)
+
+registerDoRNG() 
+set.seed(2003) 
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+
+# OR E -> C = 0.25 ---------------------------------------------------
+test_1.1 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.1)
+#export(test_1.1, here("Results", "Test_1-1.csv"))
+
+#### OR E -> C = 5 ---------------------------------------------------
+
+test_1.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.2)
+
+export(test_1.2, here("Results", "Test_1-2.csv"))
+
+```
+
+## 1.3. OR E -\> C = 0.15: expect larger downward bias than test 1.1
+
+Result: Percent bias 4.6%, coverage 93.6% (larger bias but not much)
+
+```{r}
+# Set up parallel sessions
+plan(multisession, workers = 32)
+
+set.seed(2003) 
+registerDoRNG(2003) 
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+test_1.3 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.15,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.3)
+export(test_1.3, here("Results", "Test_1-3.csv"))
+
+```
+
+## 1.4. Increase prevalence of C: expect higher bias than test 1.1
+
+Results: bias -0.051, percent bias 7.4%, coverage 92.8% (as expected)
+
+```{r}
+# Set up parallel sessions
+plan(multisession, workers = 32)
+
+set.seed(2003) 
+registerDoRNG(2003) 
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+test_1.4 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 2e-3, C_on_C = 0.3, E_on_C = 0.15,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.4)
+# Downward bias, percent bias 7.72%, coverage 92.4%
+#export(test_1.4, here("Results", "Test_1-4.csv"))
+
+```
+
+# Test 2: Setting: Mediating + confounding effect of C; Approach: ignore C in model
+
+## 2.1. Both E\>C and C\>E=0.25: expect a downward bias larger than test 1.1
+
+Result: Bias downward -0.072, percent bias 10.49%, coverage 90.2% (as expected)
+
+## 2.2. E\>C =0.25 C\>E = 5: Expect upward bias
+
+Result: Upward bias, percent bias 17.3%, coverage 77% (as expected)
+
+## 2.3. E\>C = 5 and C\>E = 0.25: Expect upward bias
+
+Upward bias 11.67%, coverage 85.7% (as expected)
+
+```{r}
+plan(multisession, workers = 30)
+
+registerDoRNG() 
+set.seed(2003) 
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+# OR C -> E = 0.25, E -> C = 0.25  ------------------------------------------------------------
+test_2.1 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_2.1)
+#export(test_2.1, here("SCCS_Simulation", "Results", "Test", "Test_2-1.csv"))
+
+
+# OR C -> E = 5, E -> C = 0.25  ----------------------------------------------------------------
+test_2.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 5, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_2.2)
+# bias upward, percent bias 17.3%, coverage 77%
+
+
+# OR C -> E = 0.25, E -> C = 5 ---------------------------------------------------
+
+test_2.3 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_2.3) # Upward bias 11.67%, coverage 85.7%
+```
+
+# Test 3: Setting: Mediating + confounding effect of C, Approach: adjusting for C in model
+
+Expect no bias
+
+Result: percent bias 0.65%, coverage 95.6% (as expected)
+
+```{r}
+plan(multisession, workers = 30)
+
+set.seed(2003) 
+registerDoRNG(2003) 
+
+n_sim <- 500
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+# OR C -> E = 0.25
+test_3.1 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_3.1) #percent bias 1.23%, coverage 95.2%
+
+
+# OR C -> E = 5
+test_3.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 5, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_3.2) #percent bias 0.65%, coverage 95.6%
+```
+
+# Test 4: Setting: Confounder U of C and Y and mediating + confounding effect of C, approach: control for C in model
+
+Expect some level of bias
+
+## 4.1.OR U->C = 5, U->Y=5
+
+Result: bias -0.019, 2.789%, coverage 93.6%
+
+## 4.2. OR U->C = 5, U->Y=15: expect: larger bias than 4.1
+
+Result: bias -0.025, 3.59%, coverage 92.9% (as expected)
+
+## 4.3. OR U -> C = 0.25, U->Y = 5
+
+Result:  bias -0.014, 2.044%, coverage 95.3%
+
+```{r}
+plan(multisession, workers = 30)
+
+registerDoRNG() 
+set.seed(2003) 
+
+n_sim <- 1000
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+# OR U>C = 5, U>Y=5 -----------------------------------------------------------
+test_4.1 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_4.1)
+#export(test_4.1, here("SCCS_Simulation", "Results", "Test", "Test_4-1.csv"))
+
+
+# OR U>C = 5, U>Y=15 -----------------------------------------------------------
+
+registerDoRNG() 
+set.seed(2003)
+
+test_4.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 15,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_4.2)
+export(test_4.2, here("SCCS_Simulation", "Results", "Test", "Test_4-2.csv"))
+
+
+# OR U>C = 0.25, U>Y=5 --------------------------------------------------------
+registerDoRNG() 
+set.seed(2003)
+test_4.3 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 0.25, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_4.3) 
+
+```
+
+## 4.4 and 4.5: Increase the incidence of second dose (set E_on_E = 0.4 instead of 0.001)
+
+Result: bias becomes very small (0.498% and 0.18%, respectively) (I have not had an explanation for this behaviour)
+
+```{r}
+plan(multisession, workers = 30)
+
+set.seed(2003) 
+registerDoRNG(2003) 
+
+n_sim <- 1000
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+# OR U>C = 5, U>Y=5 ----------------------------------------------------------
+test_4.4 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.4,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_4.4) # bias -0.003, 0.498%, coverage 94%
+export(test_4.4, here("Results", "Test_4-4.csv"))
+
+
+# OR U>C = 0.25, U>Y=5 --------------------------------------------------------
+test_4.5 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 0.25, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.4,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_4.5) #bias 0.0007, 0.18%, coverage 94.6%
+export(test_4.5, here("Results", "Test_4-5.csv"))
+
+```
+
+## 4.6 and 4.7: Effect E on subsequent C = 5 (instead of 0.25)
+
+Result: Bias -0.039, 5.65%, coverage 91.9% (4.6); bias -0.008, 1.167%, coverage 95.5% (4.7)
+```{r}
+plan(multisession, workers = 30)
+
+set.seed(2003) 
+registerDoRNG(2003) 
+
+n_sim <- 1000
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+# OR U>C = 5, U>Y=5 -------------------------------------------------------------
+test_4.6 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_4.6) 
+export(test_4.6, here("Results", "Test_4-6.csv"))
+
+
+# OR U>C = 0.25, U>Y=5 ----------------------------------------------------------
+test_4.7 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 0.25, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
+  result
+                        }
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_4.7) # 
+export(test_4.7, here("Results", "Test_4-7.csv"))
+
+```
+
+# Test 5: Setting: Confounder U of C and Y and mediating + confounding effect of C, approach: ignore C
+
+## 5.1. OR U on C & U on E = 5
+Expect slightly larger bias than test 2 (There is additional confounding effect of U at the first time point, but confounding effect of U in later time points are blocked by C being a collider of E and U)
+
+Result: bias -0.142, 20.5%, coverage 68.6% (quite larger than test 2.1 (-0.072, percent bias 10.49%), potentially due to large effect of U on C and Y)
+
+```{r}
+plan(multisession, workers = 30)
+
+registerDoRNG() 
+set.seed(2003) 
+
+n_sim <- 1000
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+# OR U>C = 5, U>Y=5 -----------------------------------------------------------
+test_5 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_5)
+export(test_5, here("SCCS_Simulation", "Results", "Test", "Test_5-1.csv"))
+
+```
+
+## 5.2. OR U on C =1 & U on E = 5
+Expect similar bias to test 2, as U is no longer confounder
+
+Result: bias -0.08, 11.6%, coverage 88.1% (quite similar to 2.1: bias -0.072, 10.49%, coverage 90.2%)
+
+```{r}
+plan(multisession, workers = 30)
+
+registerDoRNG() 
+set.seed(2003) 
+
+n_sim <- 1000
+chosen_risk_window <- 28
+
+tic("Parallel simulation") 
+test_5.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_5.2)
+export(test_5.2, here("SCCS_Simulation", "Results", "Test", "Test_5-2.csv"))
+
+```

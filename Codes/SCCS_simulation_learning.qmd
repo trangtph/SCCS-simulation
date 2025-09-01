@@ -18,6 +18,7 @@ pacman::p_load(
               foreach,     # foreach loop
               stats,
               tidyverse,
+              extraDistr,
               panelr,      # Reshape data
               SCCS,
               doParallel,
@@ -29,7 +30,7 @@ pacman::p_load(
               magrittr,     # To use the pipe %>%
               doRNG,         # Reproducible parallel session
               future,
-              dofuture
+              doFuture
               ) 
 
 options(scipen = 999)
@@ -151,7 +152,7 @@ Small number of iterations to check if it works:
 ```{r}
 set.seed(1003)
 
-n_sim <- 5
+n_sim <- 10
 
 tic("Serial simulation")
 rng_states_serial <- list() #Store the state of the random number generator 
@@ -163,7 +164,7 @@ results <- foreach( i = 1:n_sim, .combine="rbind") %do% {
 }
 toc()
 # view results
-head(results)
+View(results)
 
 ```
 
@@ -245,6 +246,27 @@ data_6 <- simple_sccs_data(n = 1000, obs_time = 500, baseline_rate = 1e-5, beta=
 result_test2 <- analyse_sccs_simple(data_6, 1)
 result_test2
 ```
+
+### Resume the simulation from the 6th rep
+
+```{r}
+n_sim <- 10
+
+.Random.seed <- rng_states_serial[[6]]
+
+tic("Serial simulation")
+rng_states_serial2 <- list() #Store the state of the random number generator 
+
+results <- foreach( i = 1:n_sim, .combine="rbind") %do% {
+  rng_states_serial2[[i]] <- .Random.seed  # save RNG state
+  data <- simple_sccs_data(n = 1000, obs_time = 500, baseline_rate = 1e-5, beta=log(2), risk_length=28)
+  result<-analyse_sccs_simple(data, i)
+}
+toc()
+# view results
+head(results)
+```
+
 
 ## 2. Cohort data generating procedure
 
@@ -775,6 +797,7 @@ bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
   # bias
   beta_1_hat <- mean(result_table[,"est_E"])
   bias_beta_1 <- beta_1_hat - true_beta1
+  percent_bias_b1 <- abs(bias_beta_1)/true_beta1
   
   beta_2_hat <- mean(result_table[,"est_C"])
   bias_beta_2 <- beta_2_hat - true_beta2
@@ -788,7 +811,7 @@ bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
                                     IRR_C_CI_Lower <= true_IRR_C & IRR_C_CI_Upper >= true_IRR_C)
   coverage_irr_C <- mean(result_table$coverage_IRR_C)  
   
-  performance <- data.frame(missing_beta1, bias_beta_1, coverage_irr_E, bias_beta_2, coverage_irr_C)
+  performance <- data.frame(missing_beta1, bias_beta_1, percent_bias_b1, coverage_irr_E, bias_beta_2, coverage_irr_C)
   
   performance
 }
@@ -928,6 +951,7 @@ export(results_list, here("Results", "SCCS_results_confounder_1000_daily.csv"))
 
 ```
 
+
 Final version:
 
 ```{r}
@@ -958,7 +982,9 @@ toc() # measure run time # 9234.47 sec
 
 export(results_list, here("SCCS_Simulation","Results", "SCCS_results_confounder_1000_daily.csv"))
 
-bias_quantification_result <-bias_quantification(true_IRR_E=2.7, true_IRR_C=5, result_table = results_list)
+SCCS_confound_1000 <- import(here("Results", "SCCS_results_confounder_1000_daily.csv"))
+
+bias_quantification_result <-bias_quantification(true_IRR_E=2.7, true_IRR_C=5, result_table = SCCS_confound_1000)
 bias_quantification_result <- bias_quantification_result %>%
   mutate(mean_nr_event = mean(results_list$n_event))
 bias_quantification_result
@@ -1274,7 +1300,7 @@ bias_quantification_result
 
 -   Cohort of 100,000 individual
 
-- Confounder U of C and Y: Daily odds $10^{-3}$. Duration of effect on C and Y: 90 days
+-   Confounder U of C and Y: Daily odds $10^{-3}$. Duration of effect on C and Y: 90 days
 
 -   Daily odds of the binary time-varying confounder C (COVID-19 infection): $10^{-3}$. Being infected in the previous 90 days reduce that odds by 70%. Being vaccinated in the previous 90 days reduce that odds by 80%. Based on the daily probability, generate the binary time-varying confounder using a Bernoulli trial.
 
@@ -1475,7 +1501,8 @@ analyse_sccs_confound <- function(data, rep)
 }
 ```
 
-### Test the function 
+### Test the function
+
 ```{r}
 set.seed(17)
 tic("Cohort simulation, confounder by past exposure with U") # 22 sec
