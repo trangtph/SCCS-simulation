@@ -36,10 +36,9 @@ options(scipen = 999)
 cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                     p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
                                     p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
-                                    p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                                    p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                     baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
 {
-  log_p_U <- log(p_U)
   log_p_C <- log(p_C)
   log_p_E <- log(p_E)
   log_U_on_C <- log(U_on_C)
@@ -91,8 +90,7 @@ cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = ch
     }
     
     # Generate U
-    prob_U <- stats::plogis(log_p_U)
-    U_t <- stats::rbinom(n, 1, prob_U)
+    U_t <- stats::rbinom(n, 1, p_U)
     U[, t] <- U_t
     
     # Update rolling of U
@@ -253,13 +251,14 @@ bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
   # Bias
   gamma_1_hat <- mean(result_table[,"est_E"])
   IRR_E_hat <- mean(result_table[,"IRR_E"])
-  bias_gamma_1 <- gamma_1_hat - true_gamma1 #absolute bias log scale
+  bias_gamma_1 <- mean(result_table[,"est_E"]-true_gamma1) #absolute bias log scale
   se_gamma_1 <- sqrt(1/(n_sim-1)*sum((result_table[,"est_E"] - gamma_1_hat)^2)) #Empirical standard error
-  bias_gamma_1_MCSE <- sqrt(1/n_sim)*se_gamma_1 #Monte Carlo standard error (MCSE) of absolute bias
-  se_gamma_1_MCSE <- se_gamma_1/sqrt(2*(n_sim-1))
+  bias_gamma_1_MCSE <- sqrt(1/n_sim)*se_gamma_1 # Monte Carlo standard error (MCSE) of absolute bias
+  se_gamma_1_MCSE <- se_gamma_1/sqrt(2*(n_sim-1)) #MCSE of empirical SE
   
-  percent_bias_g1 <- abs(bias_gamma_1)/true_gamma1
-  bias_IRR_E <- IRR_E_hat - true_IRR_E #absolute bias IRR scale 
+  relative_bias_g1 <- mean((result_table[,"est_E"]-true_gamma1)/true_gamma1) # relative bias log scale
+  relative_bias_g1_MCSE <- sqrt(1/(n_sim*(n_sim-1))*sum(((result_table[,"est_E"]-true_gamma1)/true_gamma1-relative_bias_g1)^2))
+  bias_IRR_E <- mean(result_table[,"IRR_E"]-true_IRR_E) #absolute bias IRR scale 
   
   gamma_2_hat <- mean(result_table[,"est_C"])
   bias_gamma_2 <- gamma_2_hat - true_gamma2
@@ -278,10 +277,10 @@ bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
   performance <- data.frame(missing_gamma1, gamma_1_hat, IRR_E_hat,
                             bias_gamma_1, bias_gamma_1_MCSE,
                             se_gamma_1, se_gamma_1_MCSE,
-                            percent_bias_g1, bias_IRR_E, 
+                            relative_bias_g1, relative_bias_g1_MCSE,
+                            bias_IRR_E, 
                             coverage_irr_E, coverage_irr_E_MCSE, 
                             bias_gamma_2, percent_bias_g2, coverage_irr_C)
   
   performance
 }
-
