@@ -149,10 +149,11 @@ cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = ch
 
 # Function: Reshape data to SCCS-compatible format -------------------------------
 # Only keep data on date of occurence of exposure, outcome and covariates
+# Approach 1= Ignore C, 2 = Exclude C, 3 = Censor C, 4 = Adjust for C in the model
 
-SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window){
+SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window, approach){
   Y_data <- data[Y == 1, .(id, Y_day = day)] #Filter rows with Y==1, select id and day columns
-  Y_data[, .row := seq_len(.N), by = id] # For each individual, create event index
+  Y_data[, .row := seq_len(.N), by = id] #For each individual, create event index
   
   E_data <- data[E == 1, .(id, E_day = day)]
   E_data[, .row := seq_len(.N), by = id]
@@ -160,22 +161,75 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window){
   C_data <- data[C == 1, .(id, C_day = day)]
   C_data[, .row := seq_len(.N), by = id]
   
-  merge_E_C <- data.table::merge.data.table(E_data, C_data, by = c("id", ".row"), all = TRUE)
-  merge_Y_E_C <- data.table::merge.data.table(Y_data, merge_E_C, by = "id", all = TRUE)
+  if(approach == "1"){
+    merge_Y_E <- data.table::merge.data.table(Y_data, E_data, by = "id", all = TRUE)
+    merge_Y_E <- merge_Y_E[!is.na(Y_day)] # Keep only rows with observed events
+    
+    # Add observation window and end of risk periods
+    merge_Y_E[, `:=`(
+      obs_start = 1,
+      obs_end = 500,
+      E_end = pmin(500, E_day + risk_window - 1)
+    )]
+    return(as.data.frame(merge_Y_E))
+    
+  }
   
-  # Keep only rows with observed events
-  merge_Y_E_C <- merge_Y_E_C[!is.na(Y_day)]
+  else if(approach == "2"){ #Exclude subjects with C
+    subject_C <- unique(C_data$id) #Create a list of subjects with C
+    
+    merge_Y_E <- data.table::merge.data.table(Y_data, E_data, by = "id", all = TRUE)
+    merge_Y_E <- merge_Y_E[!is.na(Y_day)]
+    
+    merge_Y_E[, `:=`(
+      obs_start = 1,
+      obs_end = 500,
+      E_end = pmin(500, E_day + risk_window - 1)
+    )]    
+    
+    merge_Y_E_noC <- merge_Y_E[!id %in% subject_C] #Exclude subjects with C
+    return(as.data.frame(merge_Y_E_noC))
+  }
   
-  # Add observation window and end of risk periods
-  merge_Y_E_C[, `:=`(
-    obs_start = 1,
-    obs_end = 500,
-    E_end = E_day + risk_window - 1,
-    C_end = C_day + 30 - 1
-  )]
+  else if(approach == "3"){ # Censor subject on the day of first C
+    C_data_1st <- C_data[, .SD[1], by = id] # Retain the first C of each subject
+    C_data_1st <- C_data_1st[,.(id, C_day_censor = C_day)]
+    
+    merge_Y_E <- data.table::merge.data.table(Y_data, E_data, by = "id", all = TRUE)
+    merge_Y_E <- merge_Y_E[!is.na(Y_day)]
+    
+    merge_Y_E[, `:=`(
+      obs_start = 1,
+      obs_end = 500
+    )]
+    
+    merge_Y_E_Ccensored <- merge_Y_E[C_data_1st, on = .(id), obs_end := C_day_censor-1]
+    merge_Y_E_Ccensored[, E_day := fifelse(E_day > obs_end, NA, E_day)]
+    merge_Y_E_Ccensored[, E_end := fifelse(is.na(E_day), NA, pmin(E_day + risk_window - 1, obs_end))]
+
+    return(as.data.frame(merge_Y_E_Ccensored))
+  }
   
-  return(as.data.frame(merge_Y_E_C))
-}
+  else if(approach == "4"){ # Adjust for C in the model
+    
+    merge_E_C <- data.table::merge.data.table(E_data, C_data, by = c("id", ".row"), all = TRUE)
+    merge_Y_E_C <- data.table::merge.data.table(Y_data, merge_E_C, by = "id", all = TRUE)
+    merge_Y_E_C <- merge_Y_E_C[!is.na(Y_day)]
+    
+    merge_Y_E_C[, `:=`(
+      obs_start = 1,
+      obs_end = 500,
+      E_end = pmin(500, E_day + risk_window - 1),
+      C_end = pmin(500, C_day + 30 - 1)
+    )]
+    
+    return(as.data.frame(merge_Y_E_C))
+  }
+  else {
+    stop("Error: Approach should be '1', '2', '3' or '4'")
+  }
+    
+  }
 
 # Function: analyse data ------------------------------------------------------
 # Two approach: ignore C or adjust for C

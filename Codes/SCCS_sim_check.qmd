@@ -35,6 +35,68 @@ pacman::p_load(
 source("SCCS_sim_functions.R")
 ```
 
+# Test each function separately
+
+```{r}
+set.seed(1997) 
+chosen_risk_window <- 30
+test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+
+test_reformatted_ignoreC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 1)
+test_reformatted_excludeC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 2)
+test_reformatted_censorC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 3)
+test_reformatted_withC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 4)
+
+analyse_sccs_confound(test_reformatted_ignoreC, rep = 1, C_adjust = FALSE)
+analyse_sccs_confound(test_reformatted_excludeC, rep = 1, C_adjust = FALSE)
+analyse_sccs_confound(test_reformatted_censorC, rep = 1, C_adjust = FALSE)
+analyse_sccs_confound(test_reformatted_withC, rep = 1, C_adjust = TRUE)
+summary(data_sccs_test$Y_day)
+```
+
+
+# Test 0: Setting: no confounding nor mediating effect of C, Approach: ignore C in model
+
+Expect no bias
+Result: bias -0.00683,  relative bias 0.99%, coverage 94.2% (as expected)
+```{r}
+# Set up parallel sessions
+plan(multisession, workers = 32)
+
+registerDoRNG() 
+set.seed(2003) 
+
+n_sim <- 500
+chosen_risk_window <- 30
+
+tic("Parallel simulation") 
+
+# OR Y -> C = 1 (no effect of C whatsoever) ---------------------------------------------------
+test_0 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 1)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=1, result_table = test_0)
+#export(test_0, here("SCCS_Simulation", "Results", "Test", "Test_0.csv"))
+```
+
+
 # Test 1: Setting: Only mediating effect of C, Approach: ignore C in model
 
 ## 1.1. OR E -\> C = 0.25: Expectation: estimated effect (total effect) smaller than direct effect
@@ -67,7 +129,7 @@ test_1.1 <- foreach(i = 1:n_sim,
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
                                p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -86,16 +148,16 @@ test_1.2 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
-                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
 
 bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.2)
 
-export(test_1.2, here("Results", "Test_1-2.csv"))
+#export(test_1.2, here("Results", "Test_1-2.csv"))
 
 ```
 
@@ -120,9 +182,9 @@ test_1.3 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.15,
-                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -153,9 +215,9 @@ test_1.4 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
                                p_C = 2e-3, C_on_C = 0.3, E_on_C = 0.15,
-                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 1, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -170,7 +232,7 @@ bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_1.4)
 
 ## 2.1. Both E\>C and C\>E=0.25: expect a downward bias larger than test 1.1
 
-Result: Bias downward -0.072, percent bias 10.49%, coverage 90.2% (as expected)
+Result: Bias downward -0.072, percent bias 10.49%, coverage 90.4% (as expected)
 
 ## 2.2. E\>C =0.25 C\>E = 5: Expect upward bias
 
@@ -181,7 +243,7 @@ Result: Upward bias, percent bias 17.3%, coverage 77% (as expected)
 Upward bias 11.67%, coverage 85.7% (as expected)
 
 ```{r}
-plan(multisession, workers = 30)
+plan(multisession, workers = 32)
 
 registerDoRNG() 
 set.seed(2003) 
@@ -198,9 +260,9 @@ test_2.1 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -219,9 +281,9 @@ test_2.2 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 5, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 5, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -238,9 +300,9 @@ test_2.3 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -252,7 +314,11 @@ bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_2.3) # Upwar
 
 Expect no bias
 
-Result: percent bias 0.65%, coverage 95.6% (as expected)
+Result: 
+
+Test 3.1. OR C -> E = 0.25: bias -0.0085, relative bias 1.23%, coverage 95.4% (as expected), se_gamma_1 = 0.1153
+
+Test 3.2. OR C -> E = 5: bias -0.005, percent bias 0.71%, coverage 95.2% (as expected)
 
 ```{r}
 plan(multisession, workers = 30)
@@ -272,9 +338,9 @@ test_3.1 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -282,6 +348,7 @@ test_3.1 <- foreach(i = 1:n_sim,
 toc() # measure run time
 
 bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_3.1) #percent bias 1.23%, coverage 95.2%
+export(test_3.1, here("SCCS_Simulation", "Results", "Test", "Test_3-1.csv"))
 
 
 # OR C -> E = 5
@@ -294,11 +361,13 @@ test_3.2 <- foreach(i = 1:n_sim,
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
                                p_E = 3.2e-3, C_on_E = 5, E_on_E = 0.001,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
 bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_3.2) #percent bias 0.65%, coverage 95.6%
+export(test_3.2, here("SCCS_Simulation", "Results", "Test", "Test_3-2.csv"))
+
 ```
 
 # Test 4: Setting: Confounder U of C and Y and mediating + confounding effect of C, approach: control for C in model
@@ -318,7 +387,7 @@ Result: bias -0.025, 3.59%, coverage 92.9% (as expected)
 Result:  bias -0.014, 2.044%, coverage 95.3%
 
 ```{r}
-plan(multisession, workers = 30)
+plan(multisession, workers = 32)
 
 registerDoRNG() 
 set.seed(2003) 
@@ -335,9 +404,9 @@ test_4.1 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -360,9 +429,9 @@ test_4.2 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 2e-3, U_on_C = 5, U_on_Y = 15,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -381,9 +450,9 @@ test_4.3 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 2e-3, U_on_C = 0.25, U_on_Y = 5,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -415,7 +484,7 @@ test_4.4 <- foreach(i = 1:n_sim,
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
                                p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.4,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -436,7 +505,7 @@ test_4.5 <- foreach(i = 1:n_sim,
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
                                p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.4,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -466,9 +535,9 @@ test_4.6 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -487,9 +556,9 @@ test_4.7 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 2e-3, U_on_C = 0.25, U_on_Y = 5,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 5,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 4)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = TRUE)
   result
                         }
@@ -523,9 +592,9 @@ test_5 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 5, U_on_Y = 5,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -559,9 +628,9 @@ test_5.2 <- foreach(i = 1:n_sim,
   data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
                                p_U = 1e-3, U_on_C = 1, U_on_Y = 5,     
                                p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 0.001,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
-  data_SCCS <- SCCS_reformat_confound(data)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 1)
   result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
   result
                         }
@@ -572,3 +641,147 @@ bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_5.2)
 export(test_5.2, here("SCCS_Simulation", "Results", "Test", "Test_5-2.csv"))
 
 ```
+
+# Test 6: Setting: Mediating + confounding effect of C, Approach: exclude C and censor C
+
+Expect no bias
+
+Result: 
+
+Test 6.1. Exclude C: bias -0.01, relative bias 1.47%, coverage 96.4%, se_gamma_1 = 0.119
+
+Test 6.2. Censor C: bias -0.0056, relative bias 0.81%, coverage 95.6% (as expected), se_gamma_1 =0.133
+
+```{r}
+plan(multisession, workers = 32)
+
+set.seed(2003) 
+registerDoRNG(2003) 
+
+n_sim <- 500
+chosen_risk_window <- 30
+# Exclude C ---------
+tic("Parallel simulation") 
+test_6.1 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 2)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_6.1)
+export(test_6.1, here("SCCS_Simulation", "Results", "Test", "Test_6-1.csv"))
+
+# Censor C --------------
+tic("Parallel simulation") 
+test_6.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 1e-3, U_on_C = 1, U_on_Y = 1,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 3)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+toc() # measure run time
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_6.2)
+export(test_6.2, here("SCCS_Simulation", "Results", "Test", "Test_6-2.csv"))
+```
+
+# Test 7: Setting: Confounder U of C and Y and mediating + confounding effect of C, approach: exclude C and censor C
+
+OR U->C = 5, U->Y=15:
+
+## 7.1. Exclude C
+
+Result: bias 0.044, relative bias = 6.3% (Interesting that this approach gives upward bias while Censoring C or adjusting for C give downward bias (test 7.2 and 4.2))
+
+## 7.2. Censor C
+
+Result: bias -0.027, relative bias 3.97% 
+
+## 7.3. Exclude C, OR U>Y =5
+Result: bias 0.017, relative bias 2.5% (confirm that this approach gives upward bias)
+
+```{r}
+plan(multisession, workers = 32)
+n_sim <- 500
+# Exclude C -------------------
+registerDoRNG() 
+set.seed(2003)
+
+test_7.1 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 15,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 2)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_7.1)
+export(test_7.1, here("SCCS_Simulation", "Results", "Test", "Test_7-1.csv"))
+
+# Censor C -------------------
+registerDoRNG() 
+set.seed(2003)
+
+test_7.2 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 15,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 3)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_7.2)
+export(test_7.2, here("SCCS_Simulation", "Results", "Test", "Test_7-2.csv"))
+
+# Retest test 7.1 with OR U -> Y = 5 to see if the bias is still positive 
+registerDoRNG() 
+set.seed(2003)
+
+test_7.3 <- foreach(i = 1:n_sim, 
+                        .options.future = list(packages = c("extraDistr", "dplyr", "SCCS", "data.table"),
+                                               seed = TRUE),
+                        .combine = rbind) %dofuture% {
+  data <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.25,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+  data_SCCS <- SCCS_reformat_confound(data, approach = 2)
+  result<-analyse_sccs_confound(data= data_SCCS, rep = i, C_adjust = FALSE)
+  result
+                        }
+
+bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_7.3)
+export(test_7.3, here("SCCS_Simulation", "Results", "Test", "Test_7-3.csv"))
+```
+
