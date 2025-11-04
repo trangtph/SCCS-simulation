@@ -1,5 +1,5 @@
 ###################################
-### Script for                  ###
+### Functions for               ###
 ### simulating and analysing    ###
 ### data.                       ###
 ###################################
@@ -28,14 +28,23 @@ pacman::p_load(
 
 options(scipen = 999)
 
+# List of methods -----------------------------------------------------------
+
+methods <- c("ignore_C",              # ignore C in model
+             "exclude_C",             # exclude subjects with C
+             "censor_C",              # censor observation time at first C occurrence
+             "adjust_C",              # adjust for C in SCCS model
+             "adjust_C_obs_at_exp", # adjust for C and start observation at exposure
+             "adjust_calendar")       # adjust for calendar month in SCCS model
+
 # Function: generate cohort data -----------------------------------------------
 
 # Four variables: exposure E, outcome Y, confounder C of E and Y that is affected
 # by past E, confounder U of C and Y
 
-cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
-                                    p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
-                                    p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+generate_full_cohort <-function(n = 100000, obs_time = 500, risk_window_E = 30,
+                                    p_U = 1e-3, U_on_C = 5, U_on_Y = 15,     
+                                    p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2, risk_window_C = chosen_risk_window_C,
                                     p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
                                     baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
 {
@@ -70,15 +79,16 @@ cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = ch
   
   for (t in 1:obs_time) {
     # Remove U, C or E events that fall outside the look-back window 
-    # (30 days for C on E, C on Y, /risk window/ for E on Y,
+    # (30 days for C on E, /risk window_C/ for C on Y, /risk window_E/ for E on Y,
     # 90 days for U on C, U on Y, and 91 days for C on C and E on C)
     if (t > 30) {
       roll_C_onE <- roll_C_onE - C[, t- 30]
-      roll_C_onY <- roll_C_onY - C[, t - 30]
-      
     }
-    if (t > risk_window) {
-      roll_E_onY <- roll_E_onY - E[, t - risk_window]
+    if (t > risk_window_C) {
+      roll_C_onY <- roll_C_onY - C[, t - risk_window_C]
+    }
+    if (t > risk_window_E) {
+      roll_E_onY <- roll_E_onY - E[, t - risk_window_E]
     }
     if (t >90) {
       roll_U_onC <- roll_U_onC - U[, t - 90]
@@ -123,7 +133,7 @@ cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = ch
     roll_E_onY <- roll_E_onY + E_t
     
     
-    # Generate Y (depends on U[t-89, t] C[t-29, t], E[t-risk_window+1, t])
+    # Generate Y (depends on U[t-89, t] C[t-risk_windowC+1, t], E[t-risk_windowE+1, t])
     recent_U_onY <- roll_U_onY > 0
     recent_C_onY <- roll_C_onY > 0
     recent_E_onY <- roll_E_onY > 0
@@ -148,10 +158,10 @@ cohort_time_var_past_e_u <-function(n = 100000, obs_time = 500, risk_window = ch
 }
 
 # Function: Reshape data to SCCS-compatible format -------------------------------
-# Only keep data on date of occurence of exposure, outcome and covariates
-# Approach 1= Ignore C, 2 = Exclude C, 3 = Censor C, 4 = Adjust for C in the model
+# Only keep data on date of occurrence of exposure, outcome and covariates
+# Method ignore_C, exclude_C, censor_C, adjust_C, C_in_model_obs_at_exp, adjust_calendar
 
-SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window, approach){
+SCCS_reformat <- function(data, risk_window_E = 30, risk_window_C = chosen_risk_window_C, method){
   Y_data <- data[Y == 1, .(id, Y_day = day)] #Filter rows with Y==1, select id and day columns
   Y_data[, .row := seq_len(.N), by = id] #For each individual, create event index
   
@@ -161,7 +171,7 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window, appro
   C_data <- data[C == 1, .(id, C_day = day)]
   C_data[, .row := seq_len(.N), by = id]
   
-  if(approach == "1"){
+  if(method %in% c("ignore_C", "adjust_calendar")){
     merge_Y_E <- data.table::merge.data.table(Y_data, E_data, by = "id", all = TRUE)
     merge_Y_E <- merge_Y_E[!is.na(Y_day)] # Keep only rows with observed events
     
@@ -169,13 +179,13 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window, appro
     merge_Y_E[, `:=`(
       obs_start = 1,
       obs_end = 500,
-      E_end = pmin(500, E_day + risk_window - 1)
+      E_end = pmin(500, E_day + risk_window_E - 1)
     )]
     return(as.data.frame(merge_Y_E))
     
   }
   
-  else if(approach == "2"){ #Exclude subjects with C
+  else if(method == "exclude_C"){ #Exclude subjects with C
     subject_C <- unique(C_data$id) #Create a list of subjects with C
     
     merge_Y_E <- data.table::merge.data.table(Y_data, E_data, by = "id", all = TRUE)
@@ -184,14 +194,14 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window, appro
     merge_Y_E[, `:=`(
       obs_start = 1,
       obs_end = 500,
-      E_end = pmin(500, E_day + risk_window - 1)
+      E_end = pmin(500, E_day + risk_window_E - 1)
     )]    
     
     merge_Y_E_noC <- merge_Y_E[!id %in% subject_C] #Exclude subjects with C
     return(as.data.frame(merge_Y_E_noC))
   }
   
-  else if(approach == "3"){ # Censor subject on the day of first C
+  else if(method == "censor_C"){ # Censor subject on the day of first C
     C_data_1st <- C_data[, .SD[1], by = id] # Retain the first C of each subject
     C_data_1st <- C_data_1st[,.(id, C_day_censor = C_day)]
     
@@ -205,12 +215,12 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window, appro
     
     merge_Y_E_Ccensored <- merge_Y_E[C_data_1st, on = .(id), obs_end := C_day_censor-1]
     merge_Y_E_Ccensored[, E_day := fifelse(E_day > obs_end, NA, E_day)]
-    merge_Y_E_Ccensored[, E_end := fifelse(is.na(E_day), NA, pmin(E_day + risk_window - 1, obs_end))]
+    merge_Y_E_Ccensored[, E_end := fifelse(is.na(E_day), NA, pmin(E_day + risk_window_E - 1, obs_end))]
 
     return(as.data.frame(merge_Y_E_Ccensored))
   }
   
-  else if(approach == "4"){ # Adjust for C in the model
+  else if(method == "adjust_C"){ # Adjust for C in the model
     
     merge_E_C <- data.table::merge.data.table(E_data, C_data, by = c("id", ".row"), all = TRUE)
     merge_Y_E_C <- data.table::merge.data.table(Y_data, merge_E_C, by = "id", all = TRUE)
@@ -219,25 +229,56 @@ SCCS_reformat_confound <- function(data, risk_window = chosen_risk_window, appro
     merge_Y_E_C[, `:=`(
       obs_start = 1,
       obs_end = 500,
-      E_end = pmin(500, E_day + risk_window - 1),
-      C_end = pmin(500, C_day + 30 - 1)
+      E_end = pmin(500, E_day + risk_window_E - 1),
+      C_end = pmin(500, C_day + risk_window_C - 1)
     )]
     
     return(as.data.frame(merge_Y_E_C))
   }
+  
+  else if(method == "adjust_C_obs_at_exp"){ # Start observation at exposure
+    
+    E_data_1st <- E_data[, .SD[1], by = id] # Retain the first E of each subject
+    E_data_1st <- E_data_1st[,.(id, E_day_censor = E_day)]
+    
+    merge_E_C <- data.table::merge.data.table(E_data, C_data, by = c("id", ".row"), all = TRUE)
+    merge_Y_E_C <- data.table::merge.data.table(Y_data, merge_E_C, by = "id", all = TRUE)
+    merge_Y_E_C <- merge_Y_E_C[!is.na(Y_day)]
+    
+    merge_Y_E_C[, `:=`(
+      obs_start = 1,
+      obs_end = 500
+    )]
+
+    merge_Y_E_C_left_censored <- merge_Y_E_C[E_data_1st, on = .(id), obs_start := E_day_censor] #Start observation on the day of 1st E
+#    merge_Y_E_C_left_censored[, C_day := case_when(!is.na(C_day) & C_day<obs_start-risk_window_C +1 ~ NA , #Left-censor C on obs_start-risk_window_C +1
+#                                                   TRUE ~ C_day)]
+    merge_Y_E_C_left_censored[, `:=`(
+      E_end = fifelse(is.na(E_day), NA, pmin(E_day + risk_window_E - 1, obs_end)),
+      C_end = fifelse(is.na(C_day), NA, pmin(C_day + risk_window_C - 1, obs_end))
+    )]
+    
+#    merge_Y_E_C_left_censored[, C_day := fifelse(!is.na(C_day) & C_day <= obs_start, obs_start, C_day)] #Left-censor start of C on obs_start
+    
+    
+    return(as.data.frame(merge_Y_E_C_left_censored))
+  }
+  
   else {
-    stop("Error: Approach should be '1', '2', '3' or '4'")
+    stop("Error: Method should be among ignore_C, exclude_C, censor_C, adjust_C, adjust_C_obs_at_exp, and adjust_calendar")
   }
     
   }
 
 # Function: analyse data ------------------------------------------------------
-# Two approach: ignore C or adjust for C
+# Three models: ignore C (method ignore_C, exclude_C, censor_C), 
+#               adjust for C (method adjust_C, adjust_C_obs_at_exp), 
+#               and adjust for calendar time (method adjust_calendar)
 
-analyse_sccs_confound <- function(data, rep, C_adjust = TRUE)
+analyse_sccs <- function(data, rep, method)
 {
-  if(C_adjust){
-    # Fit SCCS model
+  if(method %in% c("adjust_C", "adjust_C_obs_at_exp")){
+    # Adjust for C
     model <- SCCS::standardsccs(event ~ E_day + C_day, 
                           indiv= id,         # subject ID
                           astart = obs_start,# start of observation period 
@@ -260,7 +301,34 @@ analyse_sccs_confound <- function(data, rep, C_adjust = TRUE)
     IRR_C_CI_Upper <- model$conf.int[2,4]
     n_event <- model$nevent
   }
+  
+  
+  else if(method == "adjust_calendar"){
+    # Adjust for calendar time
+    model <- SCCS::standardsccs(event ~ E_day + age, 
+                                indiv= id,      # subject ID
+                                astart = obs_start,# start of observation period 
+                                aend = obs_end,    # end of observation period 
+                                aevent = Y_day, # event time
+                                adrug = E_day, # start of exposure
+                                aedrug = E_end,  # end of risk period
+                                expogrp = 0,       # start of risk period counted from 'adrug'
+                                agegrp = seq(31, 500, by = 30),
+                                data = data)
+    # Extract results from SCCS model
+    est_E <- stats::coef(model)[1,1]
+    se_E <- stats::coef(model)[1,3]
+    IRR_E <- exp(est_E)
+    IRR_E_CI_Lower <- model$conf.int[1,3]
+    IRR_E_CI_Upper <- model$conf.int[1,4]
+    est_C <- NA
+    IRR_C <- NA
+    IRR_C_CI_Lower <- NA
+    IRR_C_CI_Upper <- NA
+    n_event <- model$nevent
+  }
   else{
+    # Model with only effect of E
     model <- SCCS::standardsccs(event ~ E_day, 
                           indiv= id,      # subject ID
                           astart = obs_start,# start of observation period 

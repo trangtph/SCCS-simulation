@@ -8,7 +8,7 @@ format:
 editor: visual
 ---
 
-This script is to check the sanity of the data generating mechanism. We check the settings where there are no biased expected, and where there are predictable bias.  
+This script is to check the sanity of the data generating mechanism. We check the settings where there are no biased expected, and where there are predictable bias.
 
 # Load source file and packages
 
@@ -32,37 +32,46 @@ pacman::p_load(
   doFuture
 ) 
 
-source("SCCS_sim_functions.R")
+
+source(here("Codes", "SCCS_sim_functions.R"))
 ```
 
 # Test each function separately
 
 ```{r}
-set.seed(1997) 
-chosen_risk_window <- 30
-test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
-                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
-                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
-                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
-                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
+set.seed(2000) 
+scen <- scenarios[1,]
+test <- generate_full_cohort(n = 100000, obs_time = 500, risk_window_E = 30,
+                               p_U = 1e-3, U_on_C = 5, U_on_Y = scen[['UonY']],     
+                               p_C = scen[['p_C']], C_on_C = 0.3, E_on_C = 0.2, risk_window_C = scen[['risk_win_C']],
+                               p_E = 3.2e-3, C_on_E = scen[['ConE']], E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = scen[['IRR_E']], IRR_C = 5)
 
-test_reformatted_ignoreC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 1)
-test_reformatted_excludeC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 2)
-test_reformatted_censorC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 3)
-test_reformatted_withC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 4)
+test_reformatted_ignoreC <- SCCS_reformat(data = test, risk_window_E = 30, 
+                               risk_window_C = scen[['risk_win_C']], method = "ignore_C")
+test_reformatted_excludeC <- SCCS_reformat(data = test, risk_window_E = 30, 
+                               risk_window_C = scen[['risk_win_C']], method = "exclude_C")
+test_reformatted_censorC <- SCCS_reformat(data = test, risk_window_E = 30, 
+                               risk_window_C = scen[['risk_win_C']], method = "censor_C")
+test_reformatted_withC <- SCCS_reformat(data = test, risk_window_E = 30, 
+                               risk_window_C = scen[['risk_win_C']], method = "adjust_C")
+test_reformatted_startE3 <- SCCS_reformat(data = test, risk_window_E = 30, 
+                               risk_window_C = scen[['risk_win_C']], method = "adjust_C_obs_at_exp")
+test_reformatted_calendar <- SCCS_reformat(data = test, risk_window_E = 30, 
+                               risk_window_C = scen[['risk_win_C']], method = "adjust_calendar")
 
-analyse_sccs_confound(test_reformatted_ignoreC, rep = 1, C_adjust = FALSE)
-analyse_sccs_confound(test_reformatted_excludeC, rep = 1, C_adjust = FALSE)
-analyse_sccs_confound(test_reformatted_censorC, rep = 1, C_adjust = FALSE)
-analyse_sccs_confound(test_reformatted_withC, rep = 1, C_adjust = TRUE)
-summary(data_sccs_test$Y_day)
+analyse_sccs(data = test_reformatted_ignoreC, rep = 1, method = "ignore_C")
+analyse_sccs(data = test_reformatted_excludeC, rep = 1, method = "exclude_C")
+analyse_sccs(data = test_reformatted_censorC, rep = 1, method = "censor_C")
+analyse_sccs(data = test_reformatted_withC, rep = 1, method = "adjust_C")
+analyse_sccs(data = test_reformatted_startE3, rep = 1, method = "adjust_C_obs_at_exp")
+analyse_sccs(data = test_reformatted_calendar, rep = 1, method = "adjust_calendar")
 ```
-
 
 # Test 0: Setting: no confounding nor mediating effect of C, Approach: ignore C in model
 
-Expect no bias
-Result: bias -0.00683,  relative bias 0.99%, coverage 94.2% (as expected)
+Expect no bias Result: bias -0.00683, relative bias 0.99%, coverage 94.2% (as expected)
+
 ```{r}
 # Set up parallel sessions
 plan(multisession, workers = 32)
@@ -95,7 +104,6 @@ toc() # measure run time
 bias_quantification(true_IRR_E=2, true_IRR_C=1, result_table = test_0)
 #export(test_0, here("SCCS_Simulation", "Results", "Test", "Test_0.csv"))
 ```
-
 
 # Test 1: Setting: Only mediating effect of C, Approach: ignore C in model
 
@@ -314,11 +322,11 @@ bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_2.3) # Upwar
 
 Expect no bias
 
-Result: 
+Result:
 
-Test 3.1. OR C -> E = 0.25: bias -0.0085, relative bias 1.23%, coverage 95.4% (as expected), se_gamma_1 = 0.1153
+Test 3.1. OR C -\> E = 0.25: bias -0.0085, relative bias 1.23%, coverage 95.4% (as expected), se_gamma_1 = 0.1153
 
-Test 3.2. OR C -> E = 5: bias -0.005, percent bias 0.71%, coverage 95.2% (as expected)
+Test 3.2. OR C -\> E = 5: bias -0.005, percent bias 0.71%, coverage 95.2% (as expected)
 
 ```{r}
 plan(multisession, workers = 30)
@@ -374,17 +382,17 @@ export(test_3.2, here("SCCS_Simulation", "Results", "Test", "Test_3-2.csv"))
 
 Expect some level of bias
 
-## 4.1.OR U->C = 5, U->Y=5
+## 4.1.OR U-\>C = 5, U-\>Y=5
 
 Result: bias -0.019, 2.789%, coverage 93.6%
 
-## 4.2. OR U->C = 5, U->Y=15: expect: larger bias than 4.1
+## 4.2. OR U-\>C = 5, U-\>Y=15: expect: larger bias than 4.1
 
 Result: bias -0.025, 3.59%, coverage 92.9% (as expected)
 
-## 4.3. OR U -> C = 0.25, U->Y = 5
+## 4.3. OR U -\> C = 0.25, U-\>Y = 5
 
-Result:  bias -0.014, 2.044%, coverage 95.3%
+Result: bias -0.014, 2.044%, coverage 95.3%
 
 ```{r}
 plan(multisession, workers = 32)
@@ -517,6 +525,7 @@ export(test_4.5, here("Results", "Test_4-5.csv"))
 ## 4.6 and 4.7: Effect E on subsequent C = 5 (instead of 0.25)
 
 Result: Bias -0.039, 5.65%, coverage 91.9% (4.6); bias -0.008, 1.167%, coverage 95.5% (4.7)
+
 ```{r}
 plan(multisession, workers = 30)
 
@@ -570,6 +579,7 @@ export(test_4.7, here("Results", "Test_4-7.csv"))
 # Test 5: Setting: Confounder U of C and Y and mediating + confounding effect of C, approach: ignore C
 
 ## 5.1. OR U on C & U on E = 5
+
 Expect slightly larger bias than test 2 (There is additional confounding effect of U at the first time point, but confounding effect of U in later time points are blocked by C being a collider of E and U)
 
 Result: bias -0.142, 20.5%, coverage 68.6% (quite larger than test 2.1 (-0.072, percent bias 10.49%), potentially due to large effect of U on C and Y)
@@ -607,6 +617,7 @@ export(test_5, here("SCCS_Simulation", "Results", "Test", "Test_5-1.csv"))
 ```
 
 ## 5.2. OR U on C =1 & U on E = 5
+
 Expect similar bias to test 2, as U is no longer confounder
 
 Result: bias -0.08, 11.6%, coverage 88.1% (quite similar to 2.1: bias -0.072, 10.49%, coverage 90.2%)
@@ -646,7 +657,7 @@ export(test_5.2, here("SCCS_Simulation", "Results", "Test", "Test_5-2.csv"))
 
 Expect no bias
 
-Result: 
+Result:
 
 Test 6.1. Exclude C: bias -0.01, relative bias 1.47%, coverage 96.4%, se_gamma_1 = 0.119
 
@@ -705,7 +716,7 @@ export(test_6.2, here("SCCS_Simulation", "Results", "Test", "Test_6-2.csv"))
 
 # Test 7: Setting: Confounder U of C and Y and mediating + confounding effect of C, approach: exclude C and censor C
 
-OR U->C = 5, U->Y=15:
+OR U-\>C = 5, U-\>Y=15:
 
 ## 7.1. Exclude C
 
@@ -713,9 +724,10 @@ Result: bias 0.044, relative bias = 6.3% (Interesting that this approach gives u
 
 ## 7.2. Censor C
 
-Result: bias -0.027, relative bias 3.97% 
+Result: bias -0.027, relative bias 3.97%
 
-## 7.3. Exclude C, OR U>Y =5
+## 7.3. Exclude C, OR U\>Y =5
+
 Result: bias 0.017, relative bias 2.5% (confirm that this approach gives upward bias)
 
 ```{r}
@@ -784,4 +796,3 @@ test_7.3 <- foreach(i = 1:n_sim,
 bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_7.3)
 export(test_7.3, here("SCCS_Simulation", "Results", "Test", "Test_7-3.csv"))
 ```
-
