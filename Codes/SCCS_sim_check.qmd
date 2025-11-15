@@ -31,41 +31,32 @@ pacman::p_load(
   doRNG,        # Reproducible parallel session
   doFuture
 ) 
-
-
-source(here("Codes", "SCCS_sim_functions.R"))
+source(here("Codes", "SCCS_main_functions.R"))
+source(here("Codes", "SCCS_sim_workflow_functions.R"))
+source(here("Codes", "SCCS_helper_functions.R"))
 ```
 
 # Test each function separately
 
 ```{r}
-set.seed(2000) 
-scen <- scenarios[1,]
-test <- generate_full_cohort(n = 100000, obs_time = 500, risk_window_E = 30,
-                               p_U = 1e-3, U_on_C = 5, U_on_Y = scen[['UonY']],     
-                               p_C = scen[['p_C']], C_on_C = 0.3, E_on_C = 0.2, risk_window_C = scen[['risk_win_C']],
-                               p_E = 3.2e-3, C_on_E = scen[['ConE']], E_on_E = 1e-6,
-                               baseline_Y = 2e-5, IRR_E = scen[['IRR_E']], IRR_C = 5)
+set.seed(1997) 
+chosen_risk_window <- 30
+test <- cohort_time_var_past_e_u(n = 100000, obs_time = 500, risk_window = chosen_risk_window,
+                               p_U = 2e-3, U_on_C = 5, U_on_Y = 5,     
+                               p_C = 1e-3, C_on_C = 0.3, E_on_C = 0.2,
+                               p_E = 3.2e-3, C_on_E = 0.25, E_on_E = 1e-6,
+                               baseline_Y = 2e-5, IRR_E = 2, IRR_C = 5)
 
-test_reformatted_ignoreC <- SCCS_reformat(data = test, risk_window_E = 30, 
-                               risk_window_C = scen[['risk_win_C']], method = "ignore_C")
-test_reformatted_excludeC <- SCCS_reformat(data = test, risk_window_E = 30, 
-                               risk_window_C = scen[['risk_win_C']], method = "exclude_C")
-test_reformatted_censorC <- SCCS_reformat(data = test, risk_window_E = 30, 
-                               risk_window_C = scen[['risk_win_C']], method = "censor_C")
-test_reformatted_withC <- SCCS_reformat(data = test, risk_window_E = 30, 
-                               risk_window_C = scen[['risk_win_C']], method = "adjust_C")
-test_reformatted_startE3 <- SCCS_reformat(data = test, risk_window_E = 30, 
-                               risk_window_C = scen[['risk_win_C']], method = "adjust_C_obs_at_exp")
-test_reformatted_calendar <- SCCS_reformat(data = test, risk_window_E = 30, 
-                               risk_window_C = scen[['risk_win_C']], method = "adjust_calendar")
+test_reformatted_ignoreC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 1)
+test_reformatted_excludeC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 2)
+test_reformatted_censorC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 3)
+test_reformatted_withC <- SCCS_reformat_confound(test, risk_window = chosen_risk_window, approach = 4)
 
-analyse_sccs(data = test_reformatted_ignoreC, rep = 1, method = "ignore_C")
-analyse_sccs(data = test_reformatted_excludeC, rep = 1, method = "exclude_C")
-analyse_sccs(data = test_reformatted_censorC, rep = 1, method = "censor_C")
-analyse_sccs(data = test_reformatted_withC, rep = 1, method = "adjust_C")
-analyse_sccs(data = test_reformatted_startE3, rep = 1, method = "adjust_C_obs_at_exp")
-analyse_sccs(data = test_reformatted_calendar, rep = 1, method = "adjust_calendar")
+analyse_sccs_confound(test_reformatted_ignoreC, rep = 1, C_adjust = FALSE)
+analyse_sccs_confound(test_reformatted_excludeC, rep = 1, C_adjust = FALSE)
+analyse_sccs_confound(test_reformatted_censorC, rep = 1, C_adjust = FALSE)
+analyse_sccs_confound(test_reformatted_withC, rep = 1, C_adjust = TRUE)
+summary(data_sccs_test$Y_day)
 ```
 
 # Test 0: Setting: no confounding nor mediating effect of C, Approach: ignore C in model
@@ -795,4 +786,66 @@ test_7.3 <- foreach(i = 1:n_sim,
 
 bias_quantification(true_IRR_E=2, true_IRR_C=5, result_table = test_7.3)
 export(test_7.3, here("SCCS_Simulation", "Results", "Test", "Test_7-3.csv"))
+```
+
+# Test 8: New workflow
+
+## 8.1 No effect of U, all approaches
+
+Expect bias for ignore_C and no bias for others
+
+```{r}
+
+scenarios <- scenario_table(p_C_vals = c(1e-3), 
+                            C_on_E_vals = c(0.25),
+                            IRR_E_vals = c(2), 
+                            chosen_risk_window_C = c(10, 30, 60),
+                            U_on_Y_vals = c(1))
+methods <- c("ignore_C",              # ignore C in model
+             "exclude_C",             # exclude subjects with C
+             "censor_C",              # censor observation time at first C occurrence
+             "adjust_C",              # adjust for C in SCCS model
+             "adjust_C_obs_at_exp") # adjust for C and start observation at exposure
+plan(multisession, workers = 40)
+n_sim <- 1000
+full_simulation(scenario_table = scenarios, 
+                n_sim = n_sim, 
+                seeds = get_seeds(n_sim, scenario_table = scenarios), 
+                methods = methods, 
+                output_dir = "/gpfs/home6/tpham2/SCCS_Simulation/Results")
+bias_results_8_1 <- summarise_simulation_results(method_scen = method_scen(scenario_table = scenarios),
+                                             results_dir = here("Results","Test"),
+                                             summary_dir = file.path(results_dir, "Summary"),
+                                             summary_file_name = "Summary_Test_8-1")
+
+```
+
+## 8.2 U present, all approaches
+
+Expect bias for all approaches
+
+```{r}
+
+scenarios <- scenario_table(p_C_vals = c(1e-3), 
+                            C_on_E_vals = c(0.25),
+                            IRR_E_vals = c(2), 
+                            chosen_risk_window_C = c(10, 30, 60),
+                            U_on_Y_vals = c(15))
+methods <- c("ignore_C",              # ignore C in model
+             "exclude_C",             # exclude subjects with C
+             "censor_C",              # censor observation time at first C occurrence
+             "adjust_C",              # adjust for C in SCCS model
+             "adjust_C_obs_at_exp") # adjust for C and start observation at exposure
+plan(multisession, workers = 40)
+n_sim <- 1000
+full_simulation(scenario_table = scenarios, 
+                n_sim = n_sim, 
+                seeds = get_seeds(n_sim, scenario_table = scenarios), 
+                methods = methods, 
+                output_dir = "/gpfs/home6/tpham2/SCCS_Simulation/Results")
+bias_results_8_2 <- summarise_simulation_results(method_scen = method_scen(scenario_table = scenarios),
+                                             results_dir = here("Results","Test"),
+                                             summary_dir = file.path(results_dir, "Summary"),
+                                             summary_file_name = "Summary_Test_8-2")
+
 ```
