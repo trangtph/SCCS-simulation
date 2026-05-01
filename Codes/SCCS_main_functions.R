@@ -36,12 +36,12 @@ options(scipen = 999)
 # ------------------------------------------------------------------------------
 # List of methods --------------------------------------------------------------
 # ------------------------------------------------------------------------------
-methods <- c("ignore_C",              # ignore C in model
-             "exclude_C",             # exclude subjects with C
-             "censor_C",              # censor observation time at first C occurrence
-             "adjust_C",              # adjust for C in SCCS model
-             "adjust_C_obs_at_exp", # adjust for C and start observation at exposure
-             "adjust_calendar")       # adjust for calendar month in SCCS model
+#methods <- c("ignore_C",              # ignore C in model
+#             "exclude_C",             # exclude subjects with C
+#             "censor_C",              # censor observation time at first C occurrence
+#             "adjust_C",              # adjust for C in SCCS model
+#             "adjust_C_obs_at_exp", # adjust for C and start observation at exposure
+#             "adjust_calendar")       # adjust for calendar month in SCCS model
 
 # ------------------------------------------------------------------------------
 # Function: generate cohort data -----------------------------------------------
@@ -375,43 +375,81 @@ bias_quantification <- function(true_IRR_E, true_IRR_C, result_table)
 {
   true_gamma1 = log(true_IRR_E)
   true_gamma2 = log(true_IRR_C)
-  n_sim = nrow(result_table)
-  # Number of missing values of estimated beta1 (e.g due to convergence)
-  missing_gamma1 <- sum(is.na(result_table$est_E))
+  
+
+  # Non-convergence issues
+  non_converge_gamma_1 <- sum(is.na(result_table$est_E), nrow(result_table[result_table$est_E <= -10 | result_table$est_E >= 10,]), na.rm = TRUE) 
+  result_table <- result_table[result_table$est_E > -10 & result_table$est_E < 10,]
+  n_sim <- nrow(result_table)
+  
+  #mean number of events
+  mean_nr_event <- mean(result_table$n_event, na.rm = TRUE)
+  # Estimates
+  gamma_1_hat <- mean(result_table[,"est_E"], na.rm = TRUE)
+  IRR_E_hat <- mean(result_table[,"IRR_E"], na.rm = TRUE)
+  
+  # Variance 
+  se_gamma_1 <- sqrt(1/(n_sim-1)*sum((result_table[,"est_E"] - gamma_1_hat)^2, na.rm = TRUE)) #Empirical standard error
+  se_gamma_1_MCSE <- se_gamma_1/sqrt(2*(n_sim-1)) # Monte Carlo standard error (MCSE) of empirical SE
+  se_gamma_1_low_CI <- se_gamma_1 - 1.96*se_gamma_1_MCSE
+  se_gamma_1_up_CI <- se_gamma_1 + 1.96*se_gamma_1_MCSE
+  
+  mod_se_gamma_1 <- sqrt(mean((result_table[,"se_E"])^2, na.rm = TRUE)) # Model-based SE, target empirical SE
   
   # Bias
-  gamma_1_hat <- mean(result_table[,"est_E"])
-  IRR_E_hat <- mean(result_table[,"IRR_E"])
-  bias_gamma_1 <- mean(result_table[,"est_E"]-true_gamma1) #absolute bias log scale
-  se_gamma_1 <- sqrt(1/(n_sim-1)*sum((result_table[,"est_E"] - gamma_1_hat)^2)) #Empirical standard error
-  bias_gamma_1_MCSE <- sqrt(1/n_sim)*se_gamma_1 # Monte Carlo standard error (MCSE) of absolute bias
-  se_gamma_1_MCSE <- se_gamma_1/sqrt(2*(n_sim-1)) #MCSE of empirical SE
+  bias_gamma_1 <- mean(result_table[,"est_E"]-true_gamma1, na.rm = TRUE) #absolute bias log scale
+  bias_gamma_1_MCSE <- sqrt(1/n_sim)*se_gamma_1 #  MCSE of absolute bias
+  bias_gamma_1_low_CI <- bias_gamma_1 - 1.96*bias_gamma_1_MCSE
+  bias_gamma_1_up_CI <- bias_gamma_1 + 1.96*bias_gamma_1_MCSE
   
-  relative_bias_g1 <- mean((result_table[,"est_E"]-true_gamma1)/true_gamma1) # relative bias log scale
-  relative_bias_g1_MCSE <- sqrt(1/(n_sim*(n_sim-1))*sum(((result_table[,"est_E"]-true_gamma1)/true_gamma1-relative_bias_g1)^2))
-  bias_IRR_E <- mean(result_table[,"IRR_E"]-true_IRR_E) #absolute bias IRR scale 
+  gamma_1_hat_low_CI <-  gamma_1_hat - 1.96*bias_gamma_1_MCSE
+  gamma_1_hat_up_CI <-  gamma_1_hat + 1.96*bias_gamma_1_MCSE
   
-  gamma_2_hat <- mean(result_table[,"est_C"])
+  relative_bias_g1 <- mean((result_table[,"est_E"]-true_gamma1)/true_gamma1, na.rm = TRUE) # relative bias log scale
+  relative_bias_g1_MCSE <- sqrt(1/(n_sim*(n_sim-1))*sum(((result_table[,"est_E"]-true_gamma1)/true_gamma1-relative_bias_g1)^2, na.rm = TRUE))
+  relative_bias_g1_low_CI <- relative_bias_g1 - 1.96*relative_bias_g1_MCSE
+  relative_bias_g1_up_CI <- relative_bias_g1 + 1.96*relative_bias_g1_MCSE
+  
+  bias_IRR_E <- mean(result_table[,"IRR_E"]-true_IRR_E, na.rm = TRUE) #absolute bias IRR scale 
+  bias_IRR_E_MCSE <- sqrt(1/((n_sim-1)*n_sim)*sum((result_table[,"IRR_E"] - IRR_E_hat)^2, na.rm = TRUE))
+  bias_IRR_E_low_CI <- bias_IRR_E - 1.96*bias_IRR_E_MCSE
+  bias_IRR_E_up_CI <- bias_IRR_E + 1.96*bias_IRR_E_MCSE
+  IRR_E_hat_low_CI <- IRR_E_hat - 1.96*bias_IRR_E_MCSE
+  IRR_E_hat_up_CI <- IRR_E_hat + 1.96*bias_IRR_E_MCSE
+  
+  gamma_2_hat <- mean(result_table[,"est_C"], na.rm = TRUE)
   bias_gamma_2 <- gamma_2_hat - true_gamma2
   percent_bias_g2 <- abs(bias_gamma_2)/true_gamma2
+  
+  #MSE
+  mse_g1 <- mean((result_table[,"est_E"]-true_gamma1)^2, na.rm = TRUE)
+  mse_MCSE <- sqrt(1/(n_sim-1)*mean(((result_table[,"est_E"]-true_gamma1)^2 -mse_g1)^2, na.rm = TRUE))
+  mse_g1_low_CI <- mse_g1 - 1.96*mse_MCSE
+  mse_g1_up_CI <- mse_g1 + 1.96*mse_MCSE
   
   # Coverage
   result_table$coverage_IRR_E <- with(result_table,
                                       IRR_E_CI_Lower <= true_IRR_E & IRR_E_CI_Upper >= true_IRR_E)
   coverage_irr_E <- mean(result_table$coverage_IRR_E)
   coverage_irr_E_MCSE <- sqrt(coverage_irr_E*(1-coverage_irr_E)/n_sim)
+  coverage_irr_E_low_CI <- coverage_irr_E - 1.96*coverage_irr_E_MCSE
+  coverage_irr_E_up_CI <- coverage_irr_E + 1.96*coverage_irr_E_MCSE
   
   result_table$coverage_IRR_C <- with(result_table,
                                       IRR_C_CI_Lower <= true_IRR_C & IRR_C_CI_Upper >= true_IRR_C)
   coverage_irr_C <- mean(result_table$coverage_IRR_C)  
   
-  performance <- data.frame(missing_gamma1, gamma_1_hat, IRR_E_hat,
-                            bias_gamma_1, bias_gamma_1_MCSE,
-                            se_gamma_1, se_gamma_1_MCSE,
-                            relative_bias_g1, relative_bias_g1_MCSE,
-                            bias_IRR_E, 
-                            coverage_irr_E, coverage_irr_E_MCSE, 
+  # Summary table
+  performance <- data.frame(mean_nr_event, non_converge_gamma_1, 
+                            gamma_1_hat, gamma_1_hat_low_CI, gamma_1_hat_up_CI,
+                            IRR_E_hat, IRR_E_hat_low_CI, IRR_E_hat_up_CI,
+                            bias_gamma_1, bias_gamma_1_MCSE, bias_gamma_1_low_CI, bias_gamma_1_up_CI,
+                            mod_se_gamma_1, se_gamma_1, se_gamma_1_MCSE, se_gamma_1_low_CI, se_gamma_1_up_CI,
+                            relative_bias_g1, relative_bias_g1_MCSE, relative_bias_g1_low_CI, relative_bias_g1_up_CI,
+                            bias_IRR_E, bias_IRR_E_MCSE, bias_IRR_E_low_CI, bias_IRR_E_up_CI,
+                            mse_g1, mse_MCSE, mse_g1_low_CI, mse_g1_up_CI,
+                            coverage_irr_E, coverage_irr_E_MCSE, coverage_irr_E_low_CI, coverage_irr_E_up_CI,
                             bias_gamma_2, percent_bias_g2, coverage_irr_C)
   
-  performance
+  return(performance)
 }
