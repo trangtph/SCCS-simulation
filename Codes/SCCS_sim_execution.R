@@ -56,8 +56,7 @@ scenarios <- scenario_table(p_C_vals = c(5e-4, 1e-3, 5e-3),
 methods <- c("ignore_C",              # ignore C in model
              "exclude_C",             # exclude subjects with C
              "censor_C",              # censor observation time at first C occurrence
-             "adjust_C",              # adjust for C in SCCS model
-             "adjust_C_obs_at_exp") # adjust for C and start observation at exposure
+             "adjust_C")              # adjust for C in SCCS model
 
 ##############################
 # 3 - Generate data and apply analysis methods 
@@ -71,44 +70,6 @@ full_simulation(scenario_table = scenarios,
                 output_dir = here("Results"))
 
 
-##############################
-# 4 - Quantify bias and summarise results
-##############################
-bias_results <- summarise_simulation_results(method_scen = method_scen(scenario_table = scenarios),
-                                             results_dir = here("Results"),
-                                             summary_dir = file.path(results_dir, "Summary"),
-                                             summary_file_name = "Summary_all_scens")
 
 
-
-############################## 
-# Test the simulation
-##############################
-
-#perform_one_run(seed = 1357, rep = 1, scen = scenarios[1,], methods = methods, output_dir = here("Results"))
-
-#plan(multisession, workers = 4)
-#sim_one_scenario(scen = scenarios[1,], 
-#                 n_sim=3, 
-#                 seeds = get_seeds(n_sim=3, scenario_table = scenarios), 
-#                 methods = methods,
-#                 output_dir = here("Results"))
-
-
-
-
-scenarios <- scenario_table(p_C_vals = c(5e-3), 
-                            C_on_E_vals = c(5),
-                            IRR_E_vals = c(2), 
-                            chosen_risk_window_C = c(60),
-                            U_on_Y_vals = c(2, 15))
-
-plan(multisession, workers = 4)
-n_sim <- 5
-full_simulation(scenario_table = scenarios, 
-                n_sim = n_sim, 
-                seeds = get_seeds(n_sim, scenario_table = scenarios), 
-                methods = methods, 
-                output_dir = here("Results"))
-bias_results <- summarise_simulation_results(method_scen = method_scen(scenario_table = scenarios))
 
